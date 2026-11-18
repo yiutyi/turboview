@@ -71,8 +71,20 @@ pub fn decode_scaled(path: &Path, max_dim: u32) -> Result<(u32, u32, Vec<u8>)> {
     let (out_width, out_height) = if longest > max_dim {
         let scale_num = max_dim as u64;
         let scale_den = longest as u64;
-        let width = ((src_width as u64 * scale_num + scale_den / 2) / scale_den).max(1);
-        let height = ((src_height as u64 * scale_num + scale_den / 2) / scale_den).max(1);
+        let width = (src_width as u64)
+            .checked_mul(scale_num)
+            .and_then(|v| v.checked_add(scale_den / 2))
+            .context("WIC output width calculation overflow")?
+            .checked_div(scale_den)
+            .unwrap_or(0)
+            .max(1);
+        let height = (src_height as u64)
+            .checked_mul(scale_num)
+            .and_then(|v| v.checked_add(scale_den / 2))
+            .context("WIC output height calculation overflow")?
+            .checked_div(scale_den)
+            .unwrap_or(0)
+            .max(1);
         (width as u32, height as u32)
     } else {
         (src_width, src_height)
@@ -114,7 +126,16 @@ pub fn decode_scaled(path: &Path, max_dim: u32) -> Result<(u32, u32, Vec<u8>)> {
     let byte_len = (stride as usize)
         .checked_mul(out_height as usize)
         .context("WIC output buffer size overflow")?;
-    let mut pixels = vec![0u8; byte_len];
+    // Avoid allocator aborts on malformed dimensions or an unreasonable caller limit.
+    const MAX_OUTPUT_BYTES: usize = 512 * 1024 * 1024;
+    if byte_len > MAX_OUTPUT_BYTES || byte_len > isize::MAX as usize {
+        bail!("WIC output buffer is too large: {byte_len} bytes");
+    }
+    let mut pixels = Vec::new();
+    pixels
+        .try_reserve_exact(byte_len)
+        .context("reserve WIC output buffer")?;
+    pixels.resize(byte_len, 0);
     unsafe {
         converter
             .CopyPixels(std::ptr::null(), stride, &mut pixels)
