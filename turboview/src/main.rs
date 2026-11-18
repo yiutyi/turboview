@@ -3288,14 +3288,14 @@ fn decode_any(path: &Path, fast: bool, max_dim: u32) -> Result<DecodedImage> {
                 // 扩展名不可信：例如 WebP 被错误改名为 .jpg。
                 // image crate 的 ImageReader 按文件头识别真实格式；正常 JPEG 仍走
                 // libjpeg-turbo SIMD 快路径，只有 JPEG 解码失败才付出回退成本。
-                decode_with_image_crate(path).or(Err(jpeg_error))
+                decode_with_image_crate(path, max_dim).or(Err(jpeg_error))
             }
         },
         Some("png") => match turbo::decode_png_fast(path) {
             Some(d) => Ok(d),
-            None => decode_with_image_crate(path), // 16 位/调色板/隔行等回退
+            None => decode_with_image_crate(path, max_dim), // 16 位/调色板/隔行等回退
         },
-        _ => decode_with_image_crate(path),
+        _ => decode_with_image_crate(path, max_dim),
     }
 }
 
@@ -3328,19 +3328,19 @@ fn decode_bytes(
                 Ok(d) => Ok(d),
                 Err(e) => {
                     // 12-bit 精度等当前 libjpeg-turbo 构建不支持的 JPEG，回退 image crate
-                    decode_bytes_with_image_crate(data, read_ms).or(Err(e))
+                    decode_bytes_with_image_crate(data, read_ms, max_dim).or(Err(e))
                 }
             }
         }
         Some("png") => match turbo::decode_png_fast_bytes(data, read_ms) {
             Some(d) => Ok(d),
-            None => decode_bytes_with_image_crate(data, read_ms), // 16 位/调色板/隔行等回退
+            None => decode_bytes_with_image_crate(data, read_ms, max_dim), // 16 位/调色板/隔行等回退
         },
-        _ => decode_bytes_with_image_crate(data, read_ms),
+        _ => decode_bytes_with_image_crate(data, read_ms, max_dim),
     }
 }
 
-fn decode_with_image_crate(path: &Path) -> Result<DecodedImage> {
+fn decode_with_image_crate(path: &Path, max_dim: u32) -> Result<DecodedImage> {
     let start = Instant::now();
     let reader = image::ImageReader::open(path)
         .with_context(|| format!("无法读取图片 {}", path.display()))?
@@ -3349,6 +3349,15 @@ fn decode_with_image_crate(path: &Path) -> Result<DecodedImage> {
     let img = reader
         .decode()
         .with_context(|| format!("无法解码 {}", path.display()))?;
+    let (src_width, src_height) = img.dimensions();
+    // 通用解码器目前不提供与 TurboJPEG 等价的原生降采样接口；
+    // 至少在交给 GPU/缓存前限制输出尺寸，避免超大纹理长期占用内存。
+    let limit = max_dim.max(1);
+    let img = if src_width.max(src_height) > limit {
+        img.thumbnail(limit, limit)
+    } else {
+        img
+    };
     let rgba = img.to_rgba8();
     let (width, height) = rgba.dimensions();
     let bgra = turbo::bgra_from_rgba(rgba.as_raw());
@@ -3356,8 +3365,8 @@ fn decode_with_image_crate(path: &Path) -> Result<DecodedImage> {
         width,
         height,
         pixels: bgra,
-        src_width: width,
-        src_height: height,
+        src_width,
+        src_height,
         orientation: 1,
         roi_x: 0,
         roi_y: 0,
@@ -3375,9 +3384,20 @@ fn make_render_image(decoded: DecodedImage) -> Arc<RenderImage> {
     Arc::new(RenderImage::new(vec![Frame::new(buffer)]))
 }
 
-fn decode_bytes_with_image_crate(data: &[u8], read_ms: f64) -> Result<DecodedImage> {
+fn decode_bytes_with_image_crate(
+    data: &[u8],
+    read_ms: f64,
+    max_dim: u32,
+) -> Result<DecodedImage> {
     let start = Instant::now();
     let img = image::load_from_memory(data).context("无法解码图片数据")?;
+    let (src_width, src_height) = img.dimensions();
+    let limit = max_dim.max(1);
+    let img = if src_width.max(src_height) > limit {
+        img.thumbnail(limit, limit)
+    } else {
+        img
+    };
     let rgba = img.to_rgba8();
     let (width, height) = rgba.dimensions();
     let bgra = turbo::bgra_from_rgba(rgba.as_raw());
@@ -3385,8 +3405,8 @@ fn decode_bytes_with_image_crate(data: &[u8], read_ms: f64) -> Result<DecodedIma
         width,
         height,
         pixels: bgra,
-        src_width: width,
-        src_height: height,
+        src_width,
+        src_height,
         orientation: 1,
         roi_x: 0,
         roi_y: 0,
@@ -3805,6 +3825,27 @@ mod tests {
         assert_eq!((decoded.width, decoded.height), (1, 1));
     }
 
+
+    #[test]
+    fn generic_webp_fallback_respects_decode_dimension_limit() {
+        let (source_width, source_height, limit) = (2048u32, 1024u32, 512u32);
+        let pixels = vec![127u8; (source_width * source_height * 4) as usize];
+        let mut encoded = Vec::new();
+        image::codecs::webp::WebPEncoder::new_lossless(&mut encoded)
+            .encode(
+                &pixels,
+                source_width,
+                source_height,
+                image::ExtendedColorType::Rgba8,
+            )
+            .expect("encode large WebP fixture");
+
+        let decoded = decode_bytes(&encoded, Some("webp"), false, limit, 0.0)
+            .expect("decode WebP through generic fallback");
+
+        assert_eq!((decoded.src_width, decoded.src_height), (source_width, source_height));
+        assert_eq!((decoded.width, decoded.height), (limit, limit / 2));
+    }
 
     #[test]
     fn decodes_mislabeled_webp_from_real_zip_entry() {
