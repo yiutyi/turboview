@@ -7,17 +7,16 @@
 #![cfg(all(target_os = "windows", feature = "wic-decode"))]
 
 use anyhow::{Context, Result, bail};
-use std::{mem, os::windows::ffi::OsStrExt, path::Path};
+use std::{os::windows::ffi::OsStrExt, path::Path};
 use windows::{
     core::PCWSTR,
     Win32::{
-        Foundation::GENERIC_READ,
         Graphics::Imaging::{
             CLSID_WICImagingFactory, IWICImagingFactory, WICBitmapDitherTypeNone,
             WICBitmapInterpolationModeFant, WICBitmapPaletteTypeCustom,
             WICDecodeMetadataCacheOnDemand, GUID_WICPixelFormat32bppBGRA,
         },
-        Storage::FileSystem::FILE_ATTRIBUTE_NORMAL,
+        Storage::FileSystem::GENERIC_READ,
         System::Com::{
             CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
             COINIT_MULTITHREADED,
