@@ -3274,6 +3274,7 @@ dependencies = [
  "memmap2",
  "sevenz-rust",
  "unrar",
+ "windows 0.62.2",
  "zip",
 ]
 
