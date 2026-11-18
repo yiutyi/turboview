@@ -33,7 +33,7 @@ fn decode_bytes(data: &[u8], ext: &str) -> anyhow::Result<(u32, u32)> {
                 Err(_) => return Err(e),
             },
         },
-        "png" => match turboview::turbo::decode_png_fast_bytes(data, 0.0) {
+        "png" => match turboview::turbo::decode_png_fast_bytes(data, 0.0, u32::MAX) {
             Some(d) => d,
             None => {
                 let im = image::load_from_memory(data)?;
