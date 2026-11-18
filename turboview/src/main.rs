@@ -16,6 +16,9 @@
 // GUI 子系统：不弹控制台窗口（同时消灭"运行时多出一个命令行窗口"问题）
 #![windows_subsystem = "windows"]
 
+#[cfg(all(target_os = "windows", feature = "wic-decode"))]
+mod wic;
+
 use turboview::{archive, turbo, win32};
 
 use anyhow::{Context as _, Result};

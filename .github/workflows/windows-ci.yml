@@ -64,6 +64,9 @@ jobs:
         working-directory: .
         run: cmake --build build-turbo --config Release --target turbojpeg-static --parallel 4
 
+      - name: Compile experimental WIC decoder
+        run: cargo check --features wic-decode --locked
+
       - name: Run Rust tests
         run: cargo test --locked
 
