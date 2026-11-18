@@ -9,8 +9,8 @@
 //! - F 切换快速解码（FASTDCT + FASTUPSAMPLE）
 //! - 支持把图片文件/压缩包直接拖入窗口
 //! - 侧边栏目录树（资源管理器风格）：工具栏（刷新 / 折叠全部 / 定位当前 /
-//!   在资源管理器中打开 / 隐藏）、当前路径条、"位置"区、缩进参考线与展开箭头；
-//!   切换图片时自动展开祖先链并把当前目录滚进视野（B 键 / 双击图片区显隐）
+//!   在资源管理器中打开 / 隐藏）、当前路径条、"位置"区、层级连接线与展开箭头；
+//!   切换图片时自动展开祖先链并把当前目录滚进视野（B 键 / 工具栏按钮显隐）
 //! - 以默认看图器方式打开单张图片时，目录树自动收起，只在左上角留展开按钮
 
 // GUI 子系统：不弹控制台窗口（同时消灭"运行时多出一个命令行窗口"问题）
@@ -23,10 +23,10 @@ use archive::{ARCHIVE_EXTENSIONS, IMAGE_EXTENSIONS as SUPPORTED_EXTENSIONS};
 use std::collections::{HashMap, HashSet, VecDeque};
 use gpui::{
     actions, div, img, point, prelude::*, uniform_list, AnyElement, App,
-    AsyncApp, Bounds, ClickEvent, Context, ExternalPaths, FocusHandle, ImageSource, KeyBinding,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ObjectFit, Pixels, Point, Render,
-    RenderImage, ScrollDelta, ScrollStrategy, ScrollWheelEvent, UniformListScrollHandle,
-    WeakEntity, Window, WindowAppearance, WindowBounds, WindowOptions,
+    AsyncApp, Bounds, ClickEvent, Context, DevicePixels, ExternalPaths, FocusHandle, ImageSource,
+    KeyBinding, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ObjectFit, Pixels, Point,
+    Render, RenderImage, ScrollDelta, ScrollStrategy, ScrollWheelEvent, SvgRenderer, SvgSize,
+    UniformListScrollHandle, WeakEntity, Window, WindowAppearance, WindowBounds, WindowOptions,
     px, size, svg,
 };
 use image::{Frame, RgbaImage};
@@ -77,10 +77,10 @@ const MAX_DECODE_DIM_CAP: u32 = 4096;
 /// 解码尺寸下限：再小的话"适应窗口"都会糊（有 ROI 兜底，可以偏激进）
 const MIN_DECODE_DIM: u32 = 1024;
 /// 超出视口多少倍才值得多解一些。
-/// 1.6 = 给窗口拉伸留 60% 余量；窗口物理宽 ≥1875 时 6000px 的图会落在
-/// "1/2 解码"档（3000px），比 1/4 档清晰 4 倍、解码量只多一倍。
-/// 更小的窗口直接用 1/4 档，靠 ROI 补细节，这才是低配机该走的快路径。
-const DECODE_DIM_HEADROOM: f32 = 1.6;
+/// 1.2 = 视口 + 20% 余量。1366×768 的视口约 1325 → 上限 1590：
+/// 4000px 的图走 1/4 档（1000px），解码量比 1.6 时的 1/2 档（2000px）少 4 倍；
+/// 放大到 100% 的细节由 ROI 补。低配机上少解 4 倍像素比多留 60% 余量划算。
+const DECODE_DIM_HEADROOM: f32 = 1.2;
 
 /// 首帧预览的最长边目标（DCT 降采样一档：6000px 的图落在 1/8 → 750px）。
 /// 用 EXIF 内嵌缩略图（常见 160×120）直接拉伸到满屏会糊成一片，
@@ -129,6 +129,30 @@ const ICON_SLIDESHOW: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width
 const ICON_ARCHIVE: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 7.5h17v13h-17z"/><path d="M3.5 7.5 12 3l8.5 4.5"/><path d="M10.5 7.5v2.5h3V7.5"/></svg>"##;
 /// 原图 1:1（像素网格 + 角标：每格 = 一个原始像素）
 const ICON_ORIGINAL: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="1.5"/><path d="M9 3v18M15 3v18M3 9h18M3 15h18"/></svg>"##;
+/// 文件夹（闭合）：单色矢量轮廓，启动时按主题栅格化
+const ICON_FOLDER: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="1.9" stroke-linejoin="round"><path d="M3 6.5h6l2 2.5h10v10.5H3z"/></svg>"##;
+/// 文件夹（展开）
+const ICON_FOLDER_OPEN: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="1.9" stroke-linejoin="round"><path d="M3 8.5h6l2 2.5h9.5L19 19H3z"/></svg>"##;
+/// 主题切换：太阳（当前亮色）/ 月亮（当前暗色）
+const ICON_THEME_SUN: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M18.7 5.3l-1.4 1.4M6.7 17.3l-1.4 1.4"/></svg>"##;
+const ICON_THEME_MOON: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2" stroke-linejoin="round"><path d="M20 14.2A8.5 8.5 0 0 1 9.8 4 8.5 8.5 0 1 0 20 14.2z"/></svg>"##;
+
+/// 把内置单色 SVG 栅格化为位图。gpui_windows 不保证 svg() 元素能画出来
+/// （工具栏已因此改用字形），这里用 gpui 自带 SvgRenderer 在启动时栅格化
+/// 一次，之后每帧只是 Arc 克隆；颜色按明暗主题分别生成，不再依赖 alpha mask。
+fn make_mono_icon(svg: &[u8], px_size: i32, rgb: u32) -> Arc<RenderImage> {
+    let renderer = SvgRenderer::new(Arc::new(()));
+    let source = String::from_utf8_lossy(svg).replace("#000", &format!("#{rgb:06X}"));
+    let parsed = renderer
+        .parse_svg(source.as_bytes())
+        .expect("builtin icon svg must parse");
+    renderer
+        .render_parsed(
+            &parsed,
+            SvgSize::ExactSize(size(DevicePixels(px_size), DevicePixels(px_size))),
+        )
+        .expect("builtin icon svg must rasterize")
+}
 
 // ============================================================================
 // 压缩包内图片的"虚拟路径"
@@ -341,6 +365,10 @@ struct ImageViewer {
     dark_mode: bool,
     /// 状态栏左侧的 P 字 logo（启动时栅格化一次，RGBA 位图保颜色）
     logo: Arc<RenderImage>,
+    /// 目录树文件夹图标：[明暗][是否展开]，启动时按两套主题色各栅格化一次
+    folder_icons: [[Arc<RenderImage>; 2]; 2],
+    /// 状态栏主题图标：[明暗]，显示当前所处主题
+    theme_icons: [Arc<RenderImage>; 2],
 }
 
 impl ImageViewer {
@@ -357,12 +385,14 @@ impl ImageViewer {
         let (watch_tx, watch_rx) = flume::unbounded();
 
         // ---- 低配机自适应：缓存预算跟内存走，预取并发跟核数走 ----
-        // 可用内存的 1/4 且不超过物理内存的 1/8，夹在 [64MB, 256MB]。
-        // 4GB 机器上原来是硬吃 256MB + 解码临时缓冲，很容易触发换页。
+        // 总内存 1/32 与可用内存 1/8 取小，夹在 [64MB, 256MB]。
+        // 旧公式 total/8 在 4GB 机上算出 512MB、直接被 256MB 上限钳死，
+        // 和固定 256MB 没区别；改成 /32 后 4GB→128MB、8GB→256MB 真正分流。
         let (total_mem, avail_mem) =
             win32::memory_info().unwrap_or((8 << 30, 4 << 30));
-        let mut cache_budget = (avail_mem as usize / 4).min(total_mem as usize / 8);
-        cache_budget = cache_budget.clamp(CACHE_BUDGET_FLOOR, CACHE_BUDGET_CAP);
+        let cache_budget = (total_mem as usize / 32)
+            .min(avail_mem as usize / 8)
+            .clamp(CACHE_BUDGET_FLOOR, CACHE_BUDGET_CAP);
         let cache_max_entries = (cache_budget / (8 << 20)).clamp(4, 32);
         // 双核机器只留 1 个预取位，避免 4 张齐发把当前图解码挤慢
         let cores = std::thread::available_parallelism()
@@ -437,6 +467,21 @@ impl ImageViewer {
             refreshing: HashSet::new(),
             dark_mode: false,
             logo: make_logo_image(),
+            // [0]=亮色用深灰，[1]=暗色用浅灰；每帧只克隆 Arc
+            folder_icons: [
+                [
+                    make_mono_icon(ICON_FOLDER, 20, 0x5A5A5A),
+                    make_mono_icon(ICON_FOLDER_OPEN, 20, 0x5A5A5A),
+                ],
+                [
+                    make_mono_icon(ICON_FOLDER, 20, 0xC8C8C8),
+                    make_mono_icon(ICON_FOLDER_OPEN, 20, 0xC8C8C8),
+                ],
+            ],
+            theme_icons: [
+                make_mono_icon(ICON_THEME_SUN, 20, 0x5A5A5A),
+                make_mono_icon(ICON_THEME_MOON, 20, 0xC8C8C8),
+            ],
         };
         viewer.spawn_watch_pump(cx);
         viewer
@@ -1000,32 +1045,48 @@ impl ImageViewer {
 
         cx.spawn(async move |view: WeakEntity<Self>, cx: &mut AsyncApp| {
             let decode_path = path.clone();
-            let result = cx
+            let mut result = cx
                 .background_executor()
                 .spawn(async move {
                     // 预取降优先级：低配机上 4 个同级线程会把当前图的解码挤慢
                     if !set_current {
                         win32::thread_priority_low();
                     }
-                    let mut r = decode_any(&decode_path, fast, max_dim);
-                    // 文件可能还在下载/拷贝中（NAS 上的扫描本很常见）：
-                    // 读到的是半个 JPEG，libjpeg 报 "premature end of data segment"。
-                    // 等一会儿重试一次，比直接弹"解码失败"有用得多。
-                    if let Err(e) = &r {
-                        if is_truncated_jpeg_error(&format!("{e:#}")) {
-                            if trace_enabled() {
-                                trace("decode truncated → retry in 800ms");
-                            }
-                            std::thread::sleep(std::time::Duration::from_millis(800));
-                            r = decode_any(&decode_path, fast, max_dim);
-                        }
-                    }
+                    let r = decode_any(&decode_path, fast, max_dim);
                     if !set_current {
                         win32::thread_priority_normal();
                     }
                     r
                 })
                 .await;
+
+            // 文件可能还在下载/拷贝中（NAS 上的扫描本很常见）：读到半个 JPEG
+            // 时等一下重试。用异步 timer 而不是 thread::sleep —— 后者会占死
+            // 一个 executor worker 800ms，低配机核少时把预取/ROI 全堵在后面。
+            if let Err(e) = &result {
+                if is_truncated_jpeg_error(&format!("{e:#}")) {
+                    if trace_enabled() {
+                        trace("decode truncated → retry in 800ms");
+                    }
+                    cx.background_executor()
+                        .timer(Duration::from_millis(800))
+                        .await;
+                    let retry_path = path.clone();
+                    result = cx
+                        .background_executor()
+                        .spawn(async move {
+                            if !set_current {
+                                win32::thread_priority_low();
+                            }
+                            let r = decode_any(&retry_path, fast, max_dim);
+                            if !set_current {
+                                win32::thread_priority_normal();
+                            }
+                            r
+                        })
+                        .await;
+                }
+            }
 
             view.update(cx, |view, cx| {
                 view.in_flight.retain(|p| p != &path);
@@ -1393,6 +1454,8 @@ impl ImageViewer {
         self.roi_overlay = None;
         self.roi_wanted = None;
         self.roi_gen += 1;
+        // 旧解码可能还要几百 ms；不复位的话新图的 ROI 会被它一直挡在门外
+        self.roi_inflight = false;
     }
 
     /// 以 `cursor` 为锚点缩放
@@ -1573,7 +1636,7 @@ impl ImageViewer {
         self.goto(index, cx);
     }
 
-    /// 切换目录树显隐（双击图片区 / 点汉堡按钮 / B 键共用）
+    /// 切换目录树显隐（点汉堡按钮 / B 键共用；双击图片区不触发）
     fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
         self.sidebar_visible = !self.sidebar_visible;
         cx.notify();
@@ -1713,13 +1776,27 @@ impl ImageViewer {
         })
     }
 
-    /// 已有覆盖层是否完整盖住期望区域（源坐标系）
+    /// 已有覆盖层是否盖住期望区域（显示坐标系）。
+    /// iMCU 最大边长 32px（见 turbo.rs 的 TJ_MCU_WIDTH/HEIGHT），裁剪区向下对齐，
+    /// 返回矩形恒为 want 的子集，最多少一个 iMCU。若要求严格包含则永远为 false：
+    /// 解码完成 → cx.notify() → 下一帧再次 roi_kick → 静止画面反复重解码，
+    /// 在低配机上把翻页任务挤到队尾。四边界统一留 32px 容差即可打断该循环，
+    /// 缺口落在 want 自带 30% 余量内，不影响可见区域清晰度。
     fn roi_covers(&self, want: &RoiRect) -> bool {
+        const MCU_TOLERANCE: u32 = 32;
         self.roi_overlay.as_ref().is_some_and(|o| {
-            o.rect.x <= want.x
-                && o.rect.y <= want.y
-                && o.rect.x + o.rect.w >= want.x + want.w
-                && o.rect.y + o.rect.h >= want.y + want.h
+            o.rect.x.saturating_add(MCU_TOLERANCE) >= want.x
+                && o.rect.y.saturating_add(MCU_TOLERANCE) >= want.y
+                && o.rect
+                    .x
+                    .saturating_add(o.rect.w)
+                    .saturating_add(MCU_TOLERANCE)
+                    >= want.x.saturating_add(want.w)
+                && o.rect
+                    .y
+                    .saturating_add(o.rect.h)
+                    .saturating_add(MCU_TOLERANCE)
+                    >= want.y.saturating_add(want.h)
         })
     }
 
@@ -1778,11 +1855,15 @@ impl ImageViewer {
                 })
                 .await;
             view.update(cx, |view, cx| {
+                // 代际已变：这次结果属于上一张图。既不落地，也不能复位
+                // roi_inflight —— 那会把新图已在途的解码标志清掉。
+                if view.roi_gen != gen_id {
+                    return;
+                }
                 view.roi_inflight = false;
-                // 过期守卫：代际已变或已切图 → 丢弃
                 let still_current =
                     view.current_path().is_some_and(|p| *p == path_for_check);
-                if view.roi_gen == gen_id && still_current {
+                if still_current {
                     match result {
                         Ok(decoded) => {
                             let rect = RoiRect {
@@ -2050,20 +2131,17 @@ impl ImageViewer {
         }
     }
 
-    /// 左键抬起：位移小于阈值视为点击 —— 单击下一张；双击切换目录树显隐
+    /// 左键抬起：位移小于阈值视为点击 —— 单击下一张；双击不触发任何动作
     fn on_mouse_up(&mut self, event: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
         if event.button == MouseButton::Left {
             if let Some((start, _)) = self.drag {
                 let dx = f32::from(event.position.x - start.x);
                 let dy = f32::from(event.position.y - start.y);
                 let is_click = dx.abs() < CLICK_THRESHOLD && dy.abs() < CLICK_THRESHOLD;
-                // 单击下一张；双击切换目录树（隐藏后图片铺满，左上角出现汉堡按钮）
-                if is_click && !self.images.is_empty() {
-                    if event.click_count >= 2 {
-                        self.toggle_sidebar(cx);
-                    } else {
-                        self.nav_next(cx);
-                    }
+                // 只认单击。双击的第二次抬起必须忽略，否则一次双击会翻两张
+                // （第一次抬起已 nav_next）；更不再用它切换目录树。
+                if is_click && event.click_count < 2 && !self.images.is_empty() {
+                    self.nav_next(cx);
                 }
             }
             self.drag = None;
@@ -2281,6 +2359,7 @@ impl ImageViewer {
                 .into_any_element()
         } else {
             let colors_in = colors.clone();
+            let dark = usize::from(self.dark_mode);
             div()
                 .flex_1()
                 .min_h_0()
@@ -2299,14 +2378,44 @@ impl ImageViewer {
                                 let has_toggle =
                                     row.has_children || !row.scanned || row.loading;
 
-                                // 缩进参考线：每级一条竖直细线（资源管理器/VS Code 风格）
+                                // 层级连接线（资源管理器/VS Code 风格）：
+                                // 非最后子节点的竖线贯穿整行；最后子节点的止于行中点，
+                                // 并在本层补一条横线，形成 ├ / └ 的层级关系。
                                 let mut indent = div().h_full().flex_shrink_0().flex().flex_row();
-                                for _ in 0..row.depth {
-                                    indent = indent.child(
-                                        div().w(px(TREE_INDENT)).h_full().flex().justify_center().child(
-                                            div().w(px(1.0)).h_full().bg(guide),
-                                        ),
-                                    );
+                                let depth = row.depth.min(63) as usize;
+                                for level in 0..depth {
+                                    let ancestor_last = (row.last_flags >> level) & 1 == 1;
+                                    let cell = div()
+                                        .relative()
+                                        .w(px(TREE_INDENT))
+                                        .h_full()
+                                        .flex_shrink_0()
+                                        .flex()
+                                        .justify_center()
+                                        .child(
+                                            div()
+                                                .w(px(1.0))
+                                                .h(if ancestor_last {
+                                                    px(ROW_HEIGHT / 2.0)
+                                                } else {
+                                                    px(ROW_HEIGHT)
+                                                })
+                                                .bg(guide),
+                                        );
+                                    let cell = if level + 1 == depth {
+                                        cell.child(
+                                            div()
+                                                .absolute()
+                                                .left(px(TREE_INDENT / 2.0))
+                                                .top(px(ROW_HEIGHT / 2.0))
+                                                .w(px(TREE_INDENT / 2.0))
+                                                .h(px(1.0))
+                                                .bg(guide),
+                                        )
+                                    } else {
+                                        cell
+                                    };
+                                    indent = indent.child(cell);
                                 }
 
                                 // 计数/次要文字用淡色；箭头用正文色 + 透明度，更接近资源管理器
@@ -2353,6 +2462,8 @@ impl ImageViewer {
                                     div().w(px(16.0)).h_full().flex_shrink_0().into_any_element()
                                 };
 
+                                // 文件夹图标：矢量轮廓在启动时按明暗各栅格化一套，
+                                // 不再用 emoji（emoji 固定黄色，暗色主题下刺眼且不统一）
                                 let folder = div()
                                     .w(px(16.0))
                                     .h_full()
@@ -2360,7 +2471,15 @@ impl ImageViewer {
                                     .mr(px(4.0))
                                     .flex()
                                     .items_center()
-                                    .child(if row.expanded { "📂" } else { "📁" });
+                                    .justify_center()
+                                    .child(
+                                        img(ImageSource::Render(
+                                            this.folder_icons[dark][usize::from(row.expanded)]
+                                                .clone(),
+                                        ))
+                                        .w(px(14.0))
+                                        .h(px(14.0)),
+                                    );
 
                                 // 名称：超宽走省略号；整行可点（单击跳转 / 双击展开）
                                 let name = div()
@@ -2938,6 +3057,38 @@ impl Render for ImageViewer {
                     cx.listener(|this, _: &MouseDownEvent, w, cx| {
                         let on = !this.original_view;
                         this.set_original_view(on, w, cx);
+                    }),
+                )
+                .into_any_element(),
+        );
+        // 主题开关：与 T 键共用 toggle_theme。图标走启动时栅格化的位图，
+        // 不依赖这套 Windows 后端不保证支持的 svg() 元素。
+        badges.push(
+            div()
+                .id("toggle-theme")
+                .h(px(18.0))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(4.0))
+                .px_1()
+                .text_xs()
+                .text_color(colors.text)
+                .cursor_pointer()
+                .hover(|s| s.opacity(0.6))
+                .child(
+                    img(ImageSource::Render(
+                        self.theme_icons[usize::from(self.dark_mode)].clone(),
+                    ))
+                    .w(px(12.0))
+                    .h(px(12.0))
+                    .flex_shrink_0(),
+                )
+                .child(if self.dark_mode { "暗色" } else { "亮色" })
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _: &MouseDownEvent, _w, cx| {
+                        this.toggle_theme(cx);
                     }),
                 )
                 .into_any_element(),

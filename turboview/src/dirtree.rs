@@ -49,6 +49,9 @@ pub struct DirRow {
     pub scanned: bool,
     /// 本层正在后台扫描
     pub loading: bool,
+    /// 位 i：路径上深度 i 的节点是否为父节点的最后一个子节点。
+    /// 渲染 ├ / └ 连接线时用：非最后节点的竖线贯穿整行，最后节点的止于中点。
+    pub last_flags: u64,
 }
 
 #[derive(Default)]
@@ -294,15 +297,16 @@ impl DirTree {
             let roots: Vec<usize> = (0..self.nodes.len())
                 .filter(|&i| self.nodes[i].parent.is_none())
                 .collect();
-            for r in roots {
-                self.push_visible(r);
+            let root_count = roots.len();
+            for (i, r) in roots.into_iter().enumerate() {
+                self.push_visible(r, u64::from(i + 1 == root_count));
             }
             self.dirty = false;
         }
         &self.rows
     }
 
-    fn push_visible(&mut self, id: usize) {
+    fn push_visible(&mut self, id: usize, last_flags: u64) {
         let (name, depth, expanded, has_children, count, scanned, loading, archives) = {
             let n = &self.nodes[id];
             (
@@ -327,12 +331,26 @@ impl DirTree {
             has_children,
             scanned,
             loading,
+            last_flags,
         });
         if expanded {
+            // 只保留 0..=depth 位：更深的位是上一次 DFS 分支遗留的，必须清掉。
+            // 深度到 62 已远超 Windows 路径上限，直接不再记连接线状态。
+            let (prefix, child_bit) = if depth < 62 {
+                (last_flags & ((1u64 << (depth + 1)) - 1), 1u64 << (depth + 1))
+            } else {
+                (last_flags, 0)
+            };
+            let child_count = self.nodes[id].children.len();
             // 用索引遍历，避免克隆整棵子树 children（大目录下每帧省一次分配）
-            for i in 0..self.nodes[id].children.len() {
+            for i in 0..child_count {
                 let c = self.nodes[id].children[i];
-                self.push_visible(c);
+                let flags = if i + 1 == child_count {
+                    prefix | child_bit
+                } else {
+                    prefix & !child_bit
+                };
+                self.push_visible(c, flags);
             }
         }
     }
