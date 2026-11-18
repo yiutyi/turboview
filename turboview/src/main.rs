@@ -3786,4 +3786,22 @@ mod tests {
 
         assert_eq!((decoded.width, decoded.height), (1, 1));
     }
+
+    #[test]
+    fn decodes_mislabeled_webp_from_archive_bytes() {
+        let mut encoded = Vec::new();
+        image::codecs::webp::WebPEncoder::new_lossless(&mut encoded)
+            .encode(
+                &[0, 255, 0, 255],
+                1,
+                1,
+                image::ExtendedColorType::Rgba8,
+            )
+            .expect("encode WebP test fixture");
+
+        let decoded = decode_bytes(&encoded, Some("jpg"), false, 1024, 0.0)
+            .expect("WebP bytes should decode despite .jpg entry suffix");
+
+        assert_eq!((decoded.width, decoded.height), (1, 1));
+    }
 }
