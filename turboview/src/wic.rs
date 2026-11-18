@@ -16,7 +16,6 @@ use windows::{
             WICBitmapInterpolationModeFant, WICBitmapPaletteTypeCustom,
             WICDecodeMetadataCacheOnDemand, GUID_WICPixelFormat32bppBGRA,
         },
-        Storage::FileSystem::GENERIC_READ,
         System::Com::{
             CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
             COINIT_MULTITHREADED,
@@ -50,7 +49,7 @@ pub fn decode_scaled(path: &Path, max_dim: u32) -> Result<(u32, u32, Vec<u8>)> {
             .CreateDecoderFromFilename(
                 PCWSTR(wide.as_ptr()),
                 None,
-                GENERIC_READ,
+                0x8000_0000, // GENERIC_READ
                 WICDecodeMetadataCacheOnDemand,
             )
             .context("open image with WIC")?
@@ -115,10 +114,9 @@ pub fn decode_scaled(path: &Path, max_dim: u32) -> Result<(u32, u32, Vec<u8>)> {
         .checked_mul(out_height as usize)
         .context("WIC output buffer size overflow")?;
     let mut pixels = vec![0u8; byte_len];
-    let buffer_len = u32::try_from(pixels.len()).context("WIC output buffer exceeds 4 GiB")?;
     unsafe {
         converter
-            .CopyPixels(None, stride, buffer_len, pixels.as_mut_ptr())
+            .CopyPixels(std::ptr::null(), stride, &mut pixels)
             .context("copy scaled WIC pixels")?;
     }
 
