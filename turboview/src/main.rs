@@ -3845,6 +3845,22 @@ mod tests {
 
         assert_eq!((decoded.src_width, decoded.src_height), (source_width, source_height));
         assert_eq!((decoded.width, decoded.height), (limit, limit / 2));
+
+        // 同一尺寸限制也必须覆盖本地文件路径，而不只是压缩包内存路径。
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "turboview-webp-dimension-limit-{}-{nonce}.webp",
+            std::process::id()
+        ));
+        std::fs::write(&path, &encoded).expect("write WebP fixture");
+        let local = decode_any(&path, false, limit);
+        let _ = std::fs::remove_file(&path);
+        let local = local.expect("decode local WebP with dimension limit");
+        assert_eq!((local.src_width, local.src_height), (source_width, source_height));
+        assert_eq!((local.width, local.height), (limit, limit / 2));
     }
 
     #[test]
