@@ -2731,17 +2731,14 @@ impl Render for ImageViewer {
                 };
                 let w = px(image.width as f32 * zoom);
                 let h = px(image.height as f32 * zoom);
-                // 适配模式对齐策略：
-                // - 侧边栏可见 + 宽屏（宽≥高）：在「标题栏下 ~ 状态栏上」可用区内垂直居中，
-                //   避免下方大片空白；隐藏侧边栏时窗口更宽、图片已足够大，无需居中
-                // - 侧边栏隐藏 或 竖长（高>宽）：顶部贴标题栏（top=0），由高度约束撑满到底部
+                // 适应窗口时始终在图片区内水平、垂直居中。
+                // 宽幅图、竖幅图和隐藏侧边栏的单图模式使用同一规则，
+                // 避免宽幅图片贴顶或因侧边栏状态不同而产生视觉偏移。
                 let offset = if self.fit {
-                    let y = if image.width >= image.height && self.sidebar_visible {
-                        ((area_h - h) / 2.0).max(px(0.0))
-                    } else {
-                        px(0.0)
-                    };
-                    point((area_w - w) / 2.0, y)
+                    point(
+                        ((area_w - w) / 2.0).max(px(0.0)),
+                        ((area_h - h) / 2.0).max(px(0.0)),
+                    )
                 } else {
                     self.offset
                 };
