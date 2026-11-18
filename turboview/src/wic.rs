@@ -11,6 +11,7 @@ use std::{os::windows::ffi::OsStrExt, path::Path};
 use windows::{
     core::PCWSTR,
     Win32::{
+        Foundation::GENERIC_ACCESS_RIGHTS,
         Graphics::Imaging::{
             CLSID_WICImagingFactory, IWICImagingFactory, WICBitmapDitherTypeNone,
             WICBitmapInterpolationModeFant, WICBitmapPaletteTypeCustom,
@@ -49,7 +50,7 @@ pub fn decode_scaled(path: &Path, max_dim: u32) -> Result<(u32, u32, Vec<u8>)> {
             .CreateDecoderFromFilename(
                 PCWSTR(wide.as_ptr()),
                 None,
-                0x8000_0000, // GENERIC_READ
+                GENERIC_ACCESS_RIGHTS(0x8000_0000), // GENERIC_READ
                 WICDecodeMetadataCacheOnDemand,
             )
             .context("open image with WIC")?
