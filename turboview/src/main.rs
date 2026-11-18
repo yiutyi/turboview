@@ -3110,6 +3110,33 @@ impl Render for ImageViewer {
             );
         }
 
+        // 目录树隐藏时，把恢复入口放到状态栏最左侧；不再悬浮遮挡图片。
+        let mut status_leading: Vec<AnyElement> = Vec::new();
+        if !self.sidebar_visible {
+            status_leading.push(
+                div()
+                    .id("sidebar-toggle")
+                    .w(px(22.0))
+                    .h(px(22.0))
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded_sm()
+                    .text_color(colors.text)
+                    .cursor_pointer()
+                    .hover(|s| s.bg(colors.container))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _: &MouseDownEvent, _w, cx| {
+                            this.toggle_sidebar(cx);
+                        }),
+                    )
+                    .child("◧")
+                    .into_any_element(),
+            );
+        }
+
         let status_bar = div()
             .id("status-bar")
             .w_full()
@@ -3125,6 +3152,7 @@ impl Render for ImageViewer {
             .gap(px(8.0))
             .text_sm()
             .text_color(colors.text)
+            .children(status_leading.into_iter())
             // 左侧：P 字 logo（品牌位图，彩色）
             .child(
                 img(ImageSource::Render(self.logo.clone()))
@@ -3151,40 +3179,6 @@ impl Render for ImageViewer {
         } else {
             None
         };
-
-        // 目录树隐藏时（含"作为默认看图器打开单张图片"的启动形态），
-        // 只在左上角保留一个展开按钮：点击恢复目录树（或按 B）。
-        let mut hamburger: Vec<AnyElement> = Vec::new();
-        if !self.sidebar_visible {
-            hamburger.push(
-                div()
-                    .id("sidebar-toggle")
-                    .absolute()
-                    .top(px(6.0))
-                    .left(px(6.0))
-                    .w(px(30.0))
-                    .h(px(28.0))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded_sm()
-                    .bg(colors.container)
-                    .border_1()
-                    .border_color(colors.border)
-                    .text_color(colors.text)
-                    .opacity(0.9)
-                    .cursor_pointer()
-                    .hover(|s| s.bg(colors.background).opacity(1.0))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, _: &MouseDownEvent, _w, cx| {
-                            this.toggle_sidebar(cx);
-                        }),
-                    )
-                    .child("☰")
-                    .into_any_element(),
-            );
-        }
 
         // 根布局：纵向 flex —— 内容行（flex_1）+ 状态栏（固定 26px）。
         // 状态栏走普通文档流：以前 absolute + bottom_0 时在部分环境下整条不渲染。
@@ -3232,7 +3226,6 @@ impl Render for ImageViewer {
                     .child(image_area),
             )
             .child(status_bar)
-            .children(hamburger.into_iter())
     }
 }
 
@@ -3289,7 +3282,15 @@ fn decode_any(path: &Path, fast: bool, max_dim: u32) -> Result<DecodedImage> {
         .and_then(|e| e.to_str())
         .map(|e| e.to_ascii_lowercase());
     match ext.as_deref() {
-        Some("jpg") | Some("jpeg") => turbo::decode_jpeg(path, fast, max_dim),
+        Some("jpg") | Some("jpeg") => match turbo::decode_jpeg(path, fast, max_dim) {
+            Ok(decoded) => Ok(decoded),
+            Err(jpeg_error) => {
+                // 扩展名不可信：例如 WebP 被错误改名为 .jpg。
+                // image crate 的 ImageReader 按文件头识别真实格式；正常 JPEG 仍走
+                // libjpeg-turbo SIMD 快路径，只有 JPEG 解码失败才付出回退成本。
+                decode_with_image_crate(path).or(Err(jpeg_error))
+            }
+        },
         Some("png") => match turbo::decode_png_fast(path) {
             Some(d) => Ok(d),
             None => decode_with_image_crate(path), // 16 位/调色板/隔行等回退
@@ -3341,7 +3342,13 @@ fn decode_bytes(
 
 fn decode_with_image_crate(path: &Path) -> Result<DecodedImage> {
     let start = Instant::now();
-    let img = image::open(path).with_context(|| format!("无法解码 {}", path.display()))?;
+    let reader = image::ImageReader::open(path)
+        .with_context(|| format!("无法读取图片 {}", path.display()))?
+        .with_guessed_format()
+        .context("无法识别图片真实格式")?;
+    let img = reader
+        .decode()
+        .with_context(|| format!("无法解码 {}", path.display()))?;
     let rgba = img.to_rgba8();
     let (width, height) = rgba.dimensions();
     let bgra = turbo::bgra_from_rgba(rgba.as_raw());
