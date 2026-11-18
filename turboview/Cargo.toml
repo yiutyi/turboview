@@ -1,0 +1,60 @@
+[package]
+name = "turboview"
+version = "0.1.0"
+edition = "2024"
+description = "TurboView - 史上最快图片浏览器 (Rust + GPUI + libjpeg-turbo SIMD)"
+
+[dependencies]
+gpui = { path = "third-party/zed/crates/gpui" }
+gpui_windows = { path = "third-party/zed/crates/gpui_windows" }
+anyhow = "1"
+memmap2 = "0.9"
+flume = "0.12"
+image = { version = "0.25", default-features = false, features = [
+    "png",
+    "bmp",
+    "gif",
+    "webp",
+    "ico",
+    "tiff",
+    "pnm",
+    "tga",
+] }
+libdeflater = "1.26.1"
+# 压缩包图片浏览：ZIP（随机访问+按需解压）、7z（纯 Rust LZMA 家族）、RAR（内置官方 UnRAR C++ 源码）
+zip = { version = "9", default-features = false, features = [
+    "deflate",
+    "bzip2",
+    "deflate64",
+    "lzma",
+    "ppmd",
+    "zstd",
+] }
+sevenz-rust = { version = "0.6", default-features = false }
+unrar = "0.5"
+
+[profile.dev]
+opt-level = 1
+debug = "limited"
+incremental = true
+codegen-units = 256
+
+# The `windows` crate is the single largest compile unit in the dependency
+# graph and can exhaust RAM on 16GB machines; compile it cheaply.
+[profile.dev.package."windows"]
+opt-level = 0
+codegen-units = 256
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+
+# gpui has two optional git dependencies (scap, proptest) that cargo must
+# resolve even when the features are off. github.com is unreachable on some
+# networks, so we vendor them from codeload tarballs and patch the git sources.
+[patch."https://github.com/zed-industries/scap"]
+zed-scap = { path = "third-party/scap" }
+
+[patch."https://github.com/proptest-rs/proptest"]
+proptest = { path = "third-party/proptest/proptest" }

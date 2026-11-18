@@ -1,0 +1,16 @@
+# Rust 构建产物
+turboview/target/
+turboview/logs/
+turboview/artifacts/
+turboview/samples/
+
+# 本地构建/分发产物
+build-turbo/
+turboview.exe
+libjpeg-turbo-3.2.0.tar.gz
+
+# 工具/编辑器
+.workbuddy/
+*.code-workspace
+.DS_Store
+Thumbs.db
