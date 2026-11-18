@@ -29,7 +29,7 @@ use gpui::{
     UniformListScrollHandle, WeakEntity, Window, WindowAppearance, WindowBounds, WindowOptions,
     px, size, svg,
 };
-use image::{Frame, RgbaImage};
+use image::{Frame, GenericImageView, RgbaImage};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
