@@ -35,7 +35,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use turbo::{DecodedImage, RoiRect};
-use turboview::dirtree::{DirRow, DirTree, fmt_count};
+use turboview::dirtree::{DirTree, fmt_count};
 use turboview::scanner::scan_one_level;
 
 actions!(
@@ -1139,10 +1139,11 @@ impl ImageViewer {
         // 快速连翻时队列会积压，丢掉离当前位置超过 3 张的过期项
         let idx_now = self.index;
         let imgs = &self.images;
+        // images 始终按路径有序（insert_level_sorted / find_image_index 都依赖这一点）。
+        // 用二分替代逐项线性 position：几十万张图时每次翻页少做 O(N) 全表比较。
         self.prefetch_queue.retain(|p| {
-            imgs.iter()
-                .position(|x| x == p)
-                .is_some_and(|i| i.abs_diff(idx_now) <= 3)
+            let i = imgs.partition_point(|x| x.as_path() < p.as_path());
+            i < imgs.len() && imgs[i] == *p && i.abs_diff(idx_now) <= 3
         });
         let deltas: &[isize] = if slow_source {
             &[1]
@@ -2145,7 +2146,7 @@ impl ImageViewer {
         colors: &gpui::colors::Colors,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let rows: Vec<DirRow> = self.tree.rows().to_vec();
+        let row_count = self.tree.rows().len();
         // 当前图片所在目录（选中行高亮）
         let selected = self
             .current_path()
@@ -2270,7 +2271,7 @@ impl ImageViewer {
                     }),
             );
 
-        let list: AnyElement = if rows.is_empty() {
+        let list: AnyElement = if row_count == 0 {
             div()
                 .flex_1()
                 .p_3()
@@ -2284,14 +2285,15 @@ impl ImageViewer {
                 .flex_1()
                 .min_h_0()
                 .child(
-                    uniform_list("dir-list", rows.len(), {
-                        cx.processor(move |_this, range: std::ops::Range<usize>, _window, cx| {
+                    uniform_list("dir-list", row_count, {
+                        cx.processor(move |this, range: std::ops::Range<usize>, _window, cx| {
                             let mut items = Vec::with_capacity(range.end - range.start);
+                            // 只读可见区间的行：原来每帧 to_vec() 复制整棵目录树（几十万 String），
+                            // 现在按 range 借用，翻页/刷新不再做全量分配。
                             for ix in range {
-                                let Some(row) = rows.get(ix) else {
+                                let Some(row) = this.tree.rows().get(ix).cloned() else {
                                     continue;
                                 };
-                                let row = row.clone();
                                 let is_selected = selected == Some(row.id);
                                 // 有子目录、或子目录未知 / 正在扫描时保留展开箭头
                                 let has_toggle =

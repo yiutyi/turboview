@@ -13,6 +13,8 @@ use std::path::{Path, PathBuf};
 struct DirNode {
     /// 显示名（最后一段路径；盘根为 "Z:\" 这类完整形式）
     name: String,
+    /// name 的小写缓存：children 插入排序时避免每次比较都分配新 String
+    name_lower: String,
     /// 完整路径（惰性展开时按需扫描该层用）
     path: PathBuf,
     parent: Option<usize>,
@@ -54,6 +56,8 @@ pub struct DirTree {
     nodes: Vec<DirNode>,
     by_path: HashMap<PathBuf, usize>,
     rows: Vec<DirRow>,
+    /// 节点 id → 可见行下标，rows 重建时同步填充；避免每次定位都全表扫描
+    row_index_by_id: HashMap<usize, usize>,
     dirty: bool,
 }
 
@@ -79,10 +83,12 @@ impl DirTree {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| path.to_string_lossy().into_owned());
+        let name_lower = name.to_lowercase();
         let depth = parent_id.map_or(0, |p| self.nodes[p].depth + 1);
         let id = self.nodes.len();
         self.nodes.push(DirNode {
             name,
+            name_lower,
             path: path.to_path_buf(),
             parent: parent_id,
             children: Vec::new(),
@@ -96,10 +102,10 @@ impl DirTree {
         });
         self.by_path.insert(path.to_path_buf(), id);
         if let Some(p) = parent_id {
-            let key = self.nodes[id].name.to_lowercase();
-            let pos = self.nodes[p].children.partition_point(|&c| {
-                self.nodes[c].name.to_lowercase() < key
-            });
+            let key = &self.nodes[id].name_lower;
+            let pos = self.nodes[p]
+                .children
+                .partition_point(|&c| self.nodes[c].name_lower.as_str() < key.as_str());
             self.nodes[p].children.insert(pos, id);
         }
         self.dirty = true;
@@ -171,7 +177,10 @@ impl DirTree {
         let mut cur = Some(id);
         while let Some(c) = cur {
             let path = self.nodes[c].path.clone();
-            self.nodes[c].first_image = images
+            // images 全量有序：二分定位到前缀起点后顺序扫描，命中即停。
+            // 原实现对每个祖先线性 find，几十万张图 × 深度 = 百万级 starts_with。
+            let start = images.partition_point(|p| p.as_path() < path.as_path());
+            self.nodes[c].first_image = images[start..]
                 .iter()
                 .find(|p| p.starts_with(&path))
                 .cloned();
@@ -233,7 +242,8 @@ impl DirTree {
 
     /// 某节点在可见行里的下标（自动滚动定位用；不可见时为 None）
     pub fn row_index(&mut self, id: usize) -> Option<usize> {
-        self.rows().iter().position(|r| r.id == id)
+        self.rows(); // 确保索引是最新的
+        self.row_index_by_id.get(&id).copied()
     }
 
     pub fn lookup(&self, path: &Path) -> Option<usize> {
@@ -280,6 +290,7 @@ impl DirTree {
     pub fn rows(&mut self) -> &[DirRow] {
         if self.dirty {
             self.rows.clear();
+            self.row_index_by_id.clear();
             let roots: Vec<usize> = (0..self.nodes.len())
                 .filter(|&i| self.nodes[i].parent.is_none())
                 .collect();
@@ -305,6 +316,7 @@ impl DirTree {
                 n.archive_count,
             )
         };
+        self.row_index_by_id.insert(id, self.rows.len());
         self.rows.push(DirRow {
             id,
             depth,
@@ -317,8 +329,9 @@ impl DirTree {
             loading,
         });
         if expanded {
-            let children = self.nodes[id].children.clone();
-            for c in children {
+            // 用索引遍历，避免克隆整棵子树 children（大目录下每帧省一次分配）
+            for i in 0..self.nodes[id].children.len() {
+                let c = self.nodes[id].children[i];
                 self.push_visible(c);
             }
         }

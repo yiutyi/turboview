@@ -8,6 +8,7 @@ turboview/samples/
 build-turbo/
 turboview.exe
 libjpeg-turbo-3.2.0.tar.gz
+libjpeg-turbo-3.2.0/
 
 # 工具/编辑器
 .workbuddy/
