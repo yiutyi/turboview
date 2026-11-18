@@ -1063,3 +1063,35 @@ pub fn decode_jpeg_roi(
         fast,
     })
 }
+
+
+#[cfg(test)]
+mod png_decode_limit_tests {
+    use super::decode_png_fast_bytes;
+
+    fn png_header(width: u32, height: u32) -> Vec<u8> {
+        // Minimal structurally valid PNG chunks. The IDAT payload is intentionally
+        // not a valid zlib stream: an oversized image must be rejected before inflate.
+        let mut data = b"\x89PNG\r\n\x1a\n".to_vec();
+        data.extend_from_slice(&13u32.to_be_bytes());
+        data.extend_from_slice(b"IHDR");
+        data.extend_from_slice(&width.to_be_bytes());
+        data.extend_from_slice(&height.to_be_bytes());
+        data.extend_from_slice(&[8, 6, 0, 0, 0]);
+        data.extend_from_slice(&[0, 0, 0, 0]); // IHDR CRC (not validated here)
+        data.extend_from_slice(&1u32.to_be_bytes());
+        data.extend_from_slice(b"IDAT");
+        data.push(0);
+        data.extend_from_slice(&[0, 0, 0, 0]); // IDAT CRC
+        data.extend_from_slice(&0u32.to_be_bytes());
+        data.extend_from_slice(b"IEND");
+        data.extend_from_slice(&[0, 0, 0, 0]); // IEND CRC
+        data
+    }
+
+    #[test]
+    fn oversized_png_bypasses_full_size_fast_output() {
+        let png = png_header(8192, 6000);
+        assert!(decode_png_fast_bytes(&png, 0.0, 4096).is_none());
+    }
+}
