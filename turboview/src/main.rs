@@ -3752,3 +3752,38 @@ fn trace(msg: &str) {
         let _ = writeln!(f, "{:>8.2} ms  {}", t0.elapsed().as_secs_f64() * 1000.0, msg);
     }
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decodes_webp_content_even_when_extension_is_jpg() {
+        let mut encoded = Vec::new();
+        image::codecs::webp::WebPEncoder::new_lossless(&mut encoded)
+            .encode(
+                &[255, 0, 0, 255],
+                1,
+                1,
+                image::ExtendedColorType::Rgba8,
+            )
+            .expect("encode WebP test fixture");
+
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "turboview-webp-mislabeled-{}-{nonce}.jpg",
+            std::process::id()
+        ));
+        std::fs::write(&path, encoded).expect("write WebP fixture");
+
+        let decoded = decode_any(&path, false, 1024);
+        let _ = std::fs::remove_file(&path);
+        let decoded = decoded.expect("WebP content should decode despite .jpg suffix");
+
+        assert_eq!((decoded.width, decoded.height), (1, 1));
+    }
+}
