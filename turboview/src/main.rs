@@ -3804,4 +3804,44 @@ mod tests {
 
         assert_eq!((decoded.width, decoded.height), (1, 1));
     }
+
+
+    #[test]
+    fn decodes_mislabeled_webp_from_real_zip_entry() {
+        use std::io::Write;
+
+        let mut encoded = Vec::new();
+        image::codecs::webp::WebPEncoder::new_lossless(&mut encoded)
+            .encode(
+                &[0, 0, 255, 255],
+                1,
+                1,
+                image::ExtendedColorType::Rgba8,
+            )
+            .expect("encode WebP test fixture");
+
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "turboview-webp-archive-{}-{nonce}.zip",
+            std::process::id()
+        ));
+
+        let file = std::fs::File::create(&path).expect("create ZIP fixture");
+        let mut writer = zip::ZipWriter::new(file);
+        writer
+            .start_file("mislabelled.jpg", zip::write::SimpleFileOptions::default())
+            .expect("start ZIP entry");
+        writer.write_all(&encoded).expect("write WebP ZIP entry");
+        writer.finish().expect("finish ZIP fixture");
+
+        let result = archive::extract_entry(&path, "mislabelled.jpg")
+            .and_then(|bytes| decode_bytes(&bytes, Some("jpg"), false, 1024, 0.0));
+        let _ = std::fs::remove_file(&path);
+        let decoded = result.expect("WebP inside a real ZIP entry should decode");
+
+        assert_eq!((decoded.width, decoded.height), (1, 1));
+    }
 }
