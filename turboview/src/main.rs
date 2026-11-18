@@ -3291,7 +3291,7 @@ fn decode_any(path: &Path, fast: bool, max_dim: u32) -> Result<DecodedImage> {
                 decode_with_image_crate(path, max_dim).or(Err(jpeg_error))
             }
         },
-        Some("png") => match turbo::decode_png_fast(path) {
+        Some("png") => match turbo::decode_png_fast(path, max_dim) {
             Some(d) => Ok(d),
             None => decode_with_image_crate(path, max_dim), // 16 位/调色板/隔行等回退
         },
@@ -3332,7 +3332,7 @@ fn decode_bytes(
                 }
             }
         }
-        Some("png") => match turbo::decode_png_fast_bytes(data, read_ms) {
+        Some("png") => match turbo::decode_png_fast_bytes(data, read_ms, max_dim) {
             Some(d) => Ok(d),
             None => decode_bytes_with_image_crate(data, read_ms, max_dim), // 16 位/调色板/隔行等回退
         },
