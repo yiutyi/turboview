@@ -11,7 +11,7 @@
 //! - 侧边栏目录树（资源管理器风格）：工具栏（刷新 / 折叠全部 / 定位当前 /
 //!   在资源管理器中打开 / 隐藏）、当前路径条、"位置"区、层级连接线与展开箭头；
 //!   切换图片时自动展开祖先链并把当前目录滚进视野（B 键 / 工具栏按钮显隐）
-//! - 以默认看图器方式打开单张图片时，目录树自动收起，只在左上角留展开按钮
+//! - 以默认看图器方式打开单张图片时，目录树自动收起，状态栏最左侧保留恢复按钮
 
 // GUI 子系统：不弹控制台窗口（同时消灭"运行时多出一个命令行窗口"问题）
 #![windows_subsystem = "windows"]
@@ -29,7 +29,7 @@ use gpui::{
     UniformListScrollHandle, WeakEntity, Window, WindowAppearance, WindowBounds, WindowOptions,
     px, size, svg,
 };
-use image::{Frame, RgbaImage};
+use image::{Frame, GenericImageView, RgbaImage};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -3110,6 +3110,33 @@ impl Render for ImageViewer {
             );
         }
 
+        // 目录树隐藏时，把恢复入口放到状态栏最左侧；不再悬浮遮挡图片。
+        let mut status_leading: Vec<AnyElement> = Vec::new();
+        if !self.sidebar_visible {
+            status_leading.push(
+                div()
+                    .id("sidebar-toggle")
+                    .w(px(22.0))
+                    .h(px(22.0))
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded_sm()
+                    .text_color(colors.text)
+                    .cursor_pointer()
+                    .hover(|s| s.bg(colors.container))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _: &MouseDownEvent, _w, cx| {
+                            this.toggle_sidebar(cx);
+                        }),
+                    )
+                    .child("◧")
+                    .into_any_element(),
+            );
+        }
+
         let status_bar = div()
             .id("status-bar")
             .w_full()
@@ -3125,6 +3152,7 @@ impl Render for ImageViewer {
             .gap(px(8.0))
             .text_sm()
             .text_color(colors.text)
+            .children(status_leading.into_iter())
             // 左侧：P 字 logo（品牌位图，彩色）
             .child(
                 img(ImageSource::Render(self.logo.clone()))
@@ -3151,40 +3179,6 @@ impl Render for ImageViewer {
         } else {
             None
         };
-
-        // 目录树隐藏时（含"作为默认看图器打开单张图片"的启动形态），
-        // 只在左上角保留一个展开按钮：点击恢复目录树（或按 B）。
-        let mut hamburger: Vec<AnyElement> = Vec::new();
-        if !self.sidebar_visible {
-            hamburger.push(
-                div()
-                    .id("sidebar-toggle")
-                    .absolute()
-                    .top(px(6.0))
-                    .left(px(6.0))
-                    .w(px(30.0))
-                    .h(px(28.0))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded_sm()
-                    .bg(colors.container)
-                    .border_1()
-                    .border_color(colors.border)
-                    .text_color(colors.text)
-                    .opacity(0.9)
-                    .cursor_pointer()
-                    .hover(|s| s.bg(colors.background).opacity(1.0))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, _: &MouseDownEvent, _w, cx| {
-                            this.toggle_sidebar(cx);
-                        }),
-                    )
-                    .child("☰")
-                    .into_any_element(),
-            );
-        }
 
         // 根布局：纵向 flex —— 内容行（flex_1）+ 状态栏（固定 26px）。
         // 状态栏走普通文档流：以前 absolute + bottom_0 时在部分环境下整条不渲染。
@@ -3232,7 +3226,6 @@ impl Render for ImageViewer {
                     .child(image_area),
             )
             .child(status_bar)
-            .children(hamburger.into_iter())
     }
 }
 
@@ -3289,12 +3282,20 @@ fn decode_any(path: &Path, fast: bool, max_dim: u32) -> Result<DecodedImage> {
         .and_then(|e| e.to_str())
         .map(|e| e.to_ascii_lowercase());
     match ext.as_deref() {
-        Some("jpg") | Some("jpeg") => turbo::decode_jpeg(path, fast, max_dim),
+        Some("jpg") | Some("jpeg") => match turbo::decode_jpeg(path, fast, max_dim) {
+            Ok(decoded) => Ok(decoded),
+            Err(jpeg_error) => {
+                // 扩展名不可信：例如 WebP 被错误改名为 .jpg。
+                // image crate 的 ImageReader 按文件头识别真实格式；正常 JPEG 仍走
+                // libjpeg-turbo SIMD 快路径，只有 JPEG 解码失败才付出回退成本。
+                decode_with_image_crate(path, max_dim).or(Err(jpeg_error))
+            }
+        },
         Some("png") => match turbo::decode_png_fast(path) {
             Some(d) => Ok(d),
-            None => decode_with_image_crate(path), // 16 位/调色板/隔行等回退
+            None => decode_with_image_crate(path, max_dim), // 16 位/调色板/隔行等回退
         },
-        _ => decode_with_image_crate(path),
+        _ => decode_with_image_crate(path, max_dim),
     }
 }
 
@@ -3327,21 +3328,36 @@ fn decode_bytes(
                 Ok(d) => Ok(d),
                 Err(e) => {
                     // 12-bit 精度等当前 libjpeg-turbo 构建不支持的 JPEG，回退 image crate
-                    decode_bytes_with_image_crate(data, read_ms).or(Err(e))
+                    decode_bytes_with_image_crate(data, read_ms, max_dim).or(Err(e))
                 }
             }
         }
         Some("png") => match turbo::decode_png_fast_bytes(data, read_ms) {
             Some(d) => Ok(d),
-            None => decode_bytes_with_image_crate(data, read_ms), // 16 位/调色板/隔行等回退
+            None => decode_bytes_with_image_crate(data, read_ms, max_dim), // 16 位/调色板/隔行等回退
         },
-        _ => decode_bytes_with_image_crate(data, read_ms),
+        _ => decode_bytes_with_image_crate(data, read_ms, max_dim),
     }
 }
 
-fn decode_with_image_crate(path: &Path) -> Result<DecodedImage> {
+fn decode_with_image_crate(path: &Path, max_dim: u32) -> Result<DecodedImage> {
     let start = Instant::now();
-    let img = image::open(path).with_context(|| format!("无法解码 {}", path.display()))?;
+    let reader = image::ImageReader::open(path)
+        .with_context(|| format!("无法读取图片 {}", path.display()))?
+        .with_guessed_format()
+        .context("无法识别图片真实格式")?;
+    let img = reader
+        .decode()
+        .with_context(|| format!("无法解码 {}", path.display()))?;
+    let (src_width, src_height) = img.dimensions();
+    // 通用解码器目前不提供与 TurboJPEG 等价的原生降采样接口；
+    // 至少在交给 GPU/缓存前限制输出尺寸，避免超大纹理长期占用内存。
+    let limit = max_dim.max(1);
+    let img = if src_width.max(src_height) > limit {
+        img.thumbnail(limit, limit)
+    } else {
+        img
+    };
     let rgba = img.to_rgba8();
     let (width, height) = rgba.dimensions();
     let bgra = turbo::bgra_from_rgba(rgba.as_raw());
@@ -3349,8 +3365,8 @@ fn decode_with_image_crate(path: &Path) -> Result<DecodedImage> {
         width,
         height,
         pixels: bgra,
-        src_width: width,
-        src_height: height,
+        src_width,
+        src_height,
         orientation: 1,
         roi_x: 0,
         roi_y: 0,
@@ -3368,9 +3384,20 @@ fn make_render_image(decoded: DecodedImage) -> Arc<RenderImage> {
     Arc::new(RenderImage::new(vec![Frame::new(buffer)]))
 }
 
-fn decode_bytes_with_image_crate(data: &[u8], read_ms: f64) -> Result<DecodedImage> {
+fn decode_bytes_with_image_crate(
+    data: &[u8],
+    read_ms: f64,
+    max_dim: u32,
+) -> Result<DecodedImage> {
     let start = Instant::now();
     let img = image::load_from_memory(data).context("无法解码图片数据")?;
+    let (src_width, src_height) = img.dimensions();
+    let limit = max_dim.max(1);
+    let img = if src_width.max(src_height) > limit {
+        img.thumbnail(limit, limit)
+    } else {
+        img
+    };
     let rgba = img.to_rgba8();
     let (width, height) = rgba.dimensions();
     let bgra = turbo::bgra_from_rgba(rgba.as_raw());
@@ -3378,8 +3405,8 @@ fn decode_bytes_with_image_crate(data: &[u8], read_ms: f64) -> Result<DecodedIma
         width,
         height,
         pixels: bgra,
-        src_width: width,
-        src_height: height,
+        src_width,
+        src_height,
         orientation: 1,
         roi_x: 0,
         roi_y: 0,
@@ -3528,7 +3555,7 @@ fn main() {
 
     // 是否"打开单张图片"：双击图片 / 文件关联（本程序已注册为默认看图器）
     // 传进来的都是一个图片文件路径 —— 这种场景用户只想看图，
-    // 目录树自动收起，只在左上角留一个展开按钮（点一下或按 B 随时叫回来）。
+    // 目录树自动收起，状态栏最左侧保留恢复按钮（点一下或按 B 随时叫回来）。
     // 传目录或压缩包时是"浏览"意图，目录树保持展开。
     let open_single_image = initial_path
         .as_ref()
@@ -3743,5 +3770,135 @@ fn trace(msg: &str) {
         .open(std::env::temp_dir().join("tvtrace.log"))
     {
         let _ = writeln!(f, "{:>8.2} ms  {}", t0.elapsed().as_secs_f64() * 1000.0, msg);
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decodes_webp_content_even_when_extension_is_jpg() {
+        let mut encoded = Vec::new();
+        image::codecs::webp::WebPEncoder::new_lossless(&mut encoded)
+            .encode(
+                &[255, 0, 0, 255],
+                1,
+                1,
+                image::ExtendedColorType::Rgba8,
+            )
+            .expect("encode WebP test fixture");
+
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "turboview-webp-mislabeled-{}-{nonce}.jpg",
+            std::process::id()
+        ));
+        std::fs::write(&path, encoded).expect("write WebP fixture");
+
+        let decoded = decode_any(&path, false, 1024);
+        let _ = std::fs::remove_file(&path);
+        let decoded = decoded.expect("WebP content should decode despite .jpg suffix");
+
+        assert_eq!((decoded.width, decoded.height), (1, 1));
+    }
+
+    #[test]
+    fn decodes_mislabeled_webp_from_archive_bytes() {
+        let mut encoded = Vec::new();
+        image::codecs::webp::WebPEncoder::new_lossless(&mut encoded)
+            .encode(
+                &[0, 255, 0, 255],
+                1,
+                1,
+                image::ExtendedColorType::Rgba8,
+            )
+            .expect("encode WebP test fixture");
+
+        let decoded = decode_bytes(&encoded, Some("jpg"), false, 1024, 0.0)
+            .expect("WebP bytes should decode despite .jpg entry suffix");
+
+        assert_eq!((decoded.width, decoded.height), (1, 1));
+    }
+
+
+    #[test]
+    fn generic_webp_fallback_respects_decode_dimension_limit() {
+        let (source_width, source_height, limit) = (2048u32, 1024u32, 512u32);
+        let pixels = vec![127u8; (source_width * source_height * 4) as usize];
+        let mut encoded = Vec::new();
+        image::codecs::webp::WebPEncoder::new_lossless(&mut encoded)
+            .encode(
+                &pixels,
+                source_width,
+                source_height,
+                image::ExtendedColorType::Rgba8,
+            )
+            .expect("encode large WebP fixture");
+
+        let decoded = decode_bytes(&encoded, Some("webp"), false, limit, 0.0)
+            .expect("decode WebP through generic fallback");
+
+        assert_eq!((decoded.src_width, decoded.src_height), (source_width, source_height));
+        assert_eq!((decoded.width, decoded.height), (limit, limit / 2));
+
+        // 同一尺寸限制也必须覆盖本地文件路径，而不只是压缩包内存路径。
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "turboview-webp-dimension-limit-{}-{nonce}.webp",
+            std::process::id()
+        ));
+        std::fs::write(&path, &encoded).expect("write WebP fixture");
+        let local = decode_any(&path, false, limit);
+        let _ = std::fs::remove_file(&path);
+        let local = local.expect("decode local WebP with dimension limit");
+        assert_eq!((local.src_width, local.src_height), (source_width, source_height));
+        assert_eq!((local.width, local.height), (limit, limit / 2));
+    }
+
+    #[test]
+    fn decodes_mislabeled_webp_from_real_zip_entry() {
+        use std::io::Write;
+
+        let mut encoded = Vec::new();
+        image::codecs::webp::WebPEncoder::new_lossless(&mut encoded)
+            .encode(
+                &[0, 0, 255, 255],
+                1,
+                1,
+                image::ExtendedColorType::Rgba8,
+            )
+            .expect("encode WebP test fixture");
+
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "turboview-webp-archive-{}-{nonce}.zip",
+            std::process::id()
+        ));
+
+        let file = std::fs::File::create(&path).expect("create ZIP fixture");
+        let mut writer = zip::ZipWriter::new(file);
+        writer
+            .start_file("mislabelled.jpg", zip::write::SimpleFileOptions::default())
+            .expect("start ZIP entry");
+        writer.write_all(&encoded).expect("write WebP ZIP entry");
+        writer.finish().expect("finish ZIP fixture");
+
+        let result = archive::extract_entry(&path, "mislabelled.jpg")
+            .and_then(|bytes| decode_bytes(&bytes, Some("jpg"), false, 1024, 0.0));
+        let _ = std::fs::remove_file(&path);
+        let decoded = result.expect("WebP inside a real ZIP entry should decode");
+
+        assert_eq!((decoded.width, decoded.height), (1, 1));
     }
 }
