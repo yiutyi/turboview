@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   test:
-    name: Test (Windows)
+    name: Build and test (Windows)
     runs-on: windows-latest
     defaults:
       run:
@@ -26,6 +26,16 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Set up MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Add vendored NASM to PATH
+        shell: pwsh
+        run: |
+          "$env:GITHUB_WORKSPACE\turboview\third-party\nasm\nasm-2.16.03" >> $env:GITHUB_PATH
 
       - name: Install stable Rust
         uses: dtolnay/rust-toolchain@stable
@@ -35,5 +45,24 @@ jobs:
         with:
           workspaces: turboview
 
-      - name: Run tests
+      - name: Configure libjpeg-turbo
+        working-directory: .
+        run: >
+          cmake -G Ninja -S . -B build-turbo
+          -DCMAKE_BUILD_TYPE=Release
+          -DWITH_SIMD=ON
+          -DWITH_TURBOJPEG=ON
+          -DENABLE_SHARED=OFF
+          -DENABLE_STATIC=ON
+          -DWITH_CRT_DLL=ON
+          -DWITH_JAVA=OFF
+          -DWITH_FUZZ=OFF
+          -DWITH_TOOLS=OFF
+          -DWITH_TESTS=OFF
+
+      - name: Build libjpeg-turbo static library
+        working-directory: .
+        run: cmake --build build-turbo --config Release --target turbojpeg-static --parallel 4
+
+      - name: Run Rust tests
         run: cargo test --locked
