@@ -23,7 +23,7 @@ use turboview::{archive, turbo, win32};
 
 use anyhow::{Context as _, Result};
 use archive::{ARCHIVE_EXTENSIONS, IMAGE_EXTENSIONS as SUPPORTED_EXTENSIONS};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use gpui::{
     actions, div, img, point, prelude::*, uniform_list, AnyElement, App,
     AsyncApp, Bounds, ClickEvent, Context, DevicePixels, ExternalPaths, FocusHandle, ImageSource,
@@ -40,6 +40,7 @@ use std::time::{Duration, Instant};
 use turbo::{DecodedImage, RoiRect};
 use turboview::dirtree::{DirTree, fmt_count};
 use turboview::scanner::scan_one_level;
+use turboview::scheduler::{TaskPriority, TaskScheduler};
 
 actions!(
     turboview,
@@ -286,8 +287,8 @@ struct ImageViewer {
     cache_max_entries: usize,
     /// 同时在跑的预取解码数上限（按 CPU 核数；2 核机器上不再 4 张齐发）
     max_prefetch_tasks: usize,
-    /// 因并发上限没派发的预取任务（FIFO，有空位就补）
-    prefetch_queue: VecDeque<PathBuf>,
+    /// 有界优先级预取队列；执行中的任务仍由 in_flight 跟踪
+    prefetch_queue: TaskScheduler<PathBuf>,
     /// 最近一次渲染的视口物理尺寸 (w, h)：解码尺寸按它自适应
     viewport_px: (f32, f32),
     /// 缩略图代际：全图落地后递增，迟到的缩略图结果据此丢弃
@@ -434,7 +435,7 @@ impl ImageViewer {
             cache_budget,
             cache_max_entries,
             max_prefetch_tasks,
-            prefetch_queue: VecDeque::new(),
+            prefetch_queue: TaskScheduler::new(16, 1),
             viewport_px,
             thumb_gen: 0,
             decode_gen: 0,
@@ -973,19 +974,26 @@ impl ImageViewer {
     /// 后台解码；`set_current` 为 false 时是纯预取（只进缓存）。
     /// 预取受并发上限约束：满了排队，解码完成回调里再补位。
     fn spawn_load(&mut self, path: PathBuf, set_current: bool, cx: &mut Context<Self>) {
-        if !set_current && self.in_flight.len() >= self.max_prefetch_tasks {
-            if !self.prefetch_queue.contains(&path) && !self.in_flight.contains(&path) {
-                self.prefetch_queue.push_back(path);
-            }
+        if set_current {
+            // 用户已经选中排队中的预取项：移出队列，立即走当前图路径。
+            self.prefetch_queue.cancel_pending(|queued| queued == &path);
+            self.spawn_load_now(path, true, cx);
             return;
         }
-        self.spawn_load_now(path, set_current, cx);
+        if self.in_flight.contains(&path) {
+            return;
+        }
+        if self.in_flight.len() >= self.max_prefetch_tasks {
+            self.prefetch_queue.schedule(path, TaskPriority::Prefetch);
+            return;
+        }
+        self.spawn_load_now(path, false, cx);
     }
 
     /// 并发有空位时补发排队中的预取任务
     fn pump_prefetch_queue(&mut self, cx: &mut Context<Self>) {
         while self.in_flight.len() < self.max_prefetch_tasks {
-            let Some(next) = self.prefetch_queue.pop_front() else {
+            let Some(next) = self.prefetch_queue.pop_pending() else {
                 break;
             };
             if self.cache.iter().any(|(p, _)| *p == next) || self.in_flight.contains(&next) {
@@ -1223,14 +1231,14 @@ impl ImageViewer {
         let slow_source = self.on_remote() || self.rotational;
         if slow_source {
             self.max_prefetch_tasks = 1;
-            self.prefetch_queue.truncate(1);
+            self.prefetch_queue.clear_pending();
         }
         // 快速连翻时队列会积压，丢掉离当前位置超过 3 张的过期项
         let idx_now = self.index;
         let imgs = &self.images;
         // images 始终按路径有序（insert_level_sorted / find_image_index 都依赖这一点）。
         // 用二分替代逐项线性 position：几十万张图时每次翻页少做 O(N) 全表比较。
-        self.prefetch_queue.retain(|p| {
+        self.prefetch_queue.retain_pending(|p| {
             let i = imgs.partition_point(|x| x.as_ref() < p.as_path());
             i < imgs.len() && imgs[i].as_ref() == p.as_path() && i.abs_diff(idx_now) <= 3
         });
@@ -1300,7 +1308,7 @@ impl ImageViewer {
         self.error = None;
         self.cache.clear();
         self.in_flight.clear();
-        self.prefetch_queue.clear();
+        self.prefetch_queue.clear_pending();
         self.thumb_gen += 1;
         self.slideshow = false;
         self.slideshow_gen += 1;
