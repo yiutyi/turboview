@@ -186,6 +186,17 @@ mod tests {
         assert_eq!(actual_paths, expected);
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn preserves_unpaired_utf16_filename_units() {
+        use std::os::windows::ffi::OsStringExt;
+        let odd_name = OsString::from_wide(&[b'x' as u16, 0xD800, b'.' as u16, b'j' as u16]);
+        let path = PathBuf::from(r"C:\photos").join(odd_name);
+        let mut store = PathStore::new();
+        let id = store.insert(&path);
+        assert_eq!(store.get(id).unwrap(), path);
+    }
+
     #[test]
     fn ids_remain_stable_after_more_inserts() {
         let mut store = PathStore::new();
