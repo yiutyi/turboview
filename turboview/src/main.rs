@@ -780,7 +780,7 @@ impl ImageViewer {
 
         let gone: HashSet<PathBuf> = removed.iter().cloned().collect();
         // 被删项连带清理：缓存、在途、展开标记（虚拟条目 = 包内图，一并剔除）
-        let belongs = |p: &PathBuf| -> bool {
+        let belongs = |p: &Path| -> bool {
             gone.contains(p) || split_virtual(p).is_some_and(|(a, _)| gone.contains(&a))
         };
         let cur = self.current_path().map(Path::to_path_buf);
