@@ -157,6 +157,25 @@ fn main() {
     }
     let traversal_ms = elapsed_ms(start);
 
+    // Borrow directory/name parts without constructing PathBuf values.
+    let start = Instant::now();
+    let mut parts_checksum = 0usize;
+    for id in &ids {
+        if let Some(parts) = store.parts(*id) {
+            parts_checksum = parts_checksum
+                .wrapping_add(black_box(parts.directory.as_os_str().len()))
+                .wrapping_add(black_box(parts.file_name.len()));
+        }
+    }
+    for id in ids.iter().rev() {
+        if let Some(parts) = store.parts(*id) {
+            parts_checksum = parts_checksum
+                .wrapping_add(black_box(parts.directory.as_os_str().len()))
+                .wrapping_add(black_box(parts.file_name.len()));
+        }
+    }
+    let parts_traversal_ms = elapsed_ms(start);
+
     let start = Instant::now();
     let mut checksum = 0usize;
     for i in (0..count).step_by(97) {
@@ -200,10 +219,11 @@ fn main() {
         }
     }
     let reused_materialize_ms = elapsed_ms(start);
-    println!("PathStore + ID     build {build:9.2} ms · sort {sort:9.2} ms · indexed {index_ms:9.2} ms · fwd+rev-id {traversal_ms:9.2} ms · sampled-get {materialize_ms:9.2} ms · full-get-fwd+rev {full_materialize_ms:9.2} ms · reused-get-fwd+rev {reused_materialize_ms:9.2} ms · estimated~{:.2} MiB · dirs {}",
+    println!("PathStore + ID     build {build:9.2} ms · sort {sort:9.2} ms · indexed {index_ms:9.2} ms · fwd+rev-id {traversal_ms:9.2} ms · parts-fwd+rev {parts_traversal_ms:9.2} ms · sampled-get {materialize_ms:9.2} ms · full-get-fwd+rev {full_materialize_ms:9.2} ms · reused-get-fwd+rev {reused_materialize_ms:9.2} ms · estimated~{:.2} MiB · dirs {}",
         bytes as f64 / 1_048_576.0, store.directory_count());
     black_box(index_checksum);
     black_box(traversal_checksum);
+    black_box(parts_checksum);
     black_box(checksum);
     black_box(full_materialize_checksum);
     black_box(reused_checksum);
