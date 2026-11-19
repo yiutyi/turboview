@@ -1669,7 +1669,7 @@ impl ImageViewer {
         self.thumb_gen += 1; // 同时作废旧 fast 模式的预览帧
         self.cache.clear();
         self.in_flight.clear();
-        self.prefetch_queue.clear();
+        self.prefetch_queue.clear_pending();
         let index = self.index;
         self.goto(index, cx);
     }
