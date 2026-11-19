@@ -1091,6 +1091,7 @@ impl ImageViewer {
 
         cx.spawn(async move |view: WeakEntity<Self>, cx: &mut AsyncApp| {
             let decode_path = path.clone();
+            let decode_cancellation = cancellation.clone();
             let mut result = cx
                 .background_executor()
                 .spawn(async move {
@@ -1098,7 +1099,7 @@ impl ImageViewer {
                     if !set_current {
                         win32::thread_priority_low();
                     }
-                    if !cancellation.is_active() {
+                    if !decode_cancellation.is_active() {
                         return Err(anyhow::anyhow!("decode cancelled"));
                     }
                     let r = decode_any(&decode_path, fast, max_dim);
