@@ -214,12 +214,13 @@ mod tests {
             source.push(PathBuf::from(format!(r"D:\图库\{dir:03}\{name}")));
         }
         // Include duplicates and component-prefix edge cases.
+        let duplicate = source[17].clone();
         source.extend([
             PathBuf::from(r"D:\图库"),
             PathBuf::from(r"D:\图库\000"),
             PathBuf::from(r"D:\图库\000\a.jpg"),
-            source[17].clone(),
-            source[17].clone(),
+            duplicate.clone(),
+            duplicate,
         ]);
 
         let mut store = PathStore::with_capacity(source.len(), source.len() * 20, 258);
