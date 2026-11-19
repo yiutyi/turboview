@@ -9,7 +9,6 @@
 
 use std::collections::HashMap;
 use std::ffi::OsString;
-use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -182,6 +181,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "large synthetic memory smoke test"]
     fn million_entry_synthetic_storage_smoke() {
         // Kept ignored in normal CI; run explicitly with
         // cargo test million_entry_synthetic_storage_smoke -- --ignored.
