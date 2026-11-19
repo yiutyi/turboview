@@ -54,7 +54,8 @@ mod win_list {
         wtime: [u32; 2],
         size_high: u32,
         size_low: u32,
-        reserved: u32,
+        reserved0: u32,
+        reserved1: u32,
         name: [u16; 260],
         alt: [u16; 14],
     }
