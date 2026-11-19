@@ -1231,7 +1231,7 @@ impl ImageViewer {
         // images 始终按路径有序（insert_level_sorted / find_image_index 都依赖这一点）。
         // 用二分替代逐项线性 position：几十万张图时每次翻页少做 O(N) 全表比较。
         self.prefetch_queue.retain(|p| {
-            let i = imgs.partition_point(|x| x.as_path() < p.as_path());
+            let i = imgs.partition_point(|x| x.as_ref() < p.as_path());
             i < imgs.len() && imgs[i] == *p && i.abs_diff(idx_now) <= 3
         });
         let deltas: &[isize] = if slow_source {
@@ -1246,7 +1246,7 @@ impl ImageViewer {
             if archive::is_archive(&path) {
                 continue;
             }
-            let cached = self.cache.iter().any(|(p, _)| p.as_path() == path.as_ref());
+            let cached = self.cache.iter().any(|(p, _)| p.as_path() == path.as_path());
             if !cached && !self.in_flight.contains(&path) {
                 self.spawn_load(path, false, cx);
             }
@@ -1407,7 +1407,7 @@ impl ImageViewer {
         }
         let mut batch = batch;
         batch.sort_unstable();
-        let cur = self.current_path().cloned(); // 合并会移动元素，先记下当前图
+        let cur = self.current_path().map(Path::to_path_buf); // 合并会移动元素，先记下当前图
         let lo = self.images.partition_point(|p| p.as_ref() < batch[0].as_path());
         let hi = self.images.partition_point(|p| p.as_ref() <= batch[batch.len() - 1].as_path());
         let keep: HashSet<&PathBuf> = batch.iter().collect();
@@ -1859,7 +1859,7 @@ impl ImageViewer {
             return;
         }
         let Some(rect) = self.roi_wanted.clone() else { return };
-        let Some(path) = self.current_path().cloned() else { return };
+        let Some(path) = self.current_path().map(Path::to_path_buf) else { return };
         // 压缩包条目：decode_jpeg_roi 需要本地文件，直接跳过
         if split_virtual(&path).is_some() {
             return;
