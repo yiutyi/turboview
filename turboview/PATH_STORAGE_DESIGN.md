@@ -70,3 +70,16 @@ arena (no temporary per-filename `Vec<u16>`). The storage estimate includes the
 directory hash table and directory string payload, but excludes allocator
 metadata/alignment; treat it as an estimate rather than RSS. A Windows-only
 test covers unpaired UTF-16 code units.
+
+
+## Current benchmark caveat
+
+The current `PathStore::sort_ids` comparator reconstructs two owned `PathBuf`
+values per comparison to guarantee exact `Path::cmp` semantics. Its sort timing
+is therefore a deliberately conservative correctness baseline and is expected
+to be much slower than sorting borrowed `PathBuf`/`Arc<Path>` values. This is
+not an acceptable production implementation. Do not interpret the current
+prototype's sort time as the best possible compact-store performance, and do
+not integrate it into the viewer. The next optimization must provide a
+component-aware borrowed comparator with ordering-parity tests, or another
+precomputed sort-key design whose memory cost is measured honestly.
