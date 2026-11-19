@@ -76,7 +76,7 @@ fn main() {
     let mut checksum = 0usize;
     for i in (0..count).step_by(97) {
         let path = paths[i].clone();
-        black_box(&path);
+        let path = black_box(path);
         checksum = checksum.wrapping_add(black_box(path.as_os_str().len()));
     }
     let sampled_get = elapsed_ms(start);
@@ -97,12 +97,12 @@ fn main() {
     let mut forward_checksum = 0usize;
     for path in &paths {
         let owned = path.clone();
-        black_box(&owned);
+        let owned = black_box(owned);
         forward_checksum = forward_checksum.wrapping_add(black_box(owned.as_os_str().len()));
     }
     for path in paths.iter().rev() {
         let owned = path.clone();
-        black_box(&owned);
+        let owned = black_box(owned);
         forward_checksum = forward_checksum.wrapping_add(black_box(owned.as_os_str().len()));
     }
     let traversal = elapsed_ms(start);
@@ -111,12 +111,12 @@ fn main() {
     let mut reused_checksum = 0usize;
     for path in &paths {
         reusable_path.clone_from(path);
-        black_box(&reusable_path);
+        black_box(reusable_path.as_os_str().as_encoded_bytes());
         reused_checksum = reused_checksum.wrapping_add(black_box(reusable_path.as_os_str().len()));
     }
     for path in paths.iter().rev() {
         reusable_path.clone_from(path);
-        black_box(&reusable_path);
+        black_box(reusable_path.as_os_str().as_encoded_bytes());
         reused_checksum = reused_checksum.wrapping_add(black_box(reusable_path.as_os_str().len()));
     }
     let reused_get = elapsed_ms(start);
@@ -142,7 +142,7 @@ fn main() {
     let mut checksum = 0usize;
     for i in (0..count).step_by(97) {
         let owned = paths[i].to_path_buf();
-        black_box(&owned);
+        let owned = black_box(owned);
         checksum = checksum.wrapping_add(black_box(owned.as_os_str().len()));
     }
     let sampled_get = elapsed_ms(start);
@@ -163,12 +163,12 @@ fn main() {
     let mut forward_checksum = 0usize;
     for path in &paths {
         let owned = path.to_path_buf();
-        black_box(&owned);
+        let owned = black_box(owned);
         forward_checksum = forward_checksum.wrapping_add(black_box(owned.as_os_str().len()));
     }
     for path in paths.iter().rev() {
         let owned = path.to_path_buf();
-        black_box(&owned);
+        let owned = black_box(owned);
         forward_checksum = forward_checksum.wrapping_add(black_box(owned.as_os_str().len()));
     }
     let traversal = elapsed_ms(start);
@@ -179,14 +179,14 @@ fn main() {
         let os = reusable_path.as_mut_os_string();
         os.clear();
         os.push(path.as_os_str());
-        black_box(&reusable_path);
+        black_box(reusable_path.as_os_str().as_encoded_bytes());
         reused_checksum = reused_checksum.wrapping_add(black_box(reusable_path.as_os_str().len()));
     }
     for path in paths.iter().rev() {
         let os = reusable_path.as_mut_os_string();
         os.clear();
         os.push(path.as_os_str());
-        black_box(&reusable_path);
+        black_box(reusable_path.as_os_str().as_encoded_bytes());
         reused_checksum = reused_checksum.wrapping_add(black_box(reusable_path.as_os_str().len()));
     }
     let reused_get = elapsed_ms(start);
@@ -253,7 +253,7 @@ fn main() {
     let mut checksum = 0usize;
     for i in (0..count).step_by(97) {
         if let Some(path) = store.get(ids[i]) {
-            black_box(&path);
+            let path = black_box(path);
             checksum = checksum.wrapping_add(black_box(path.as_os_str().len()));
         }
     }
@@ -263,14 +263,14 @@ fn main() {
     let mut full_materialize_checksum = 0usize;
     for id in &ids {
         if let Some(path) = store.get(*id) {
-            black_box(&path);
+            let path = black_box(path);
             full_materialize_checksum = full_materialize_checksum
                 .wrapping_add(black_box(path.as_os_str().len()));
         }
     }
     for id in ids.iter().rev() {
         if let Some(path) = store.get(*id) {
-            black_box(&path);
+            let path = black_box(path);
             full_materialize_checksum = full_materialize_checksum
                 .wrapping_add(black_box(path.as_os_str().len()));
         }
@@ -284,14 +284,14 @@ fn main() {
     let mut reused_checksum = 0usize;
     for id in &ids {
         if store.get_into(*id, &mut reusable_path) {
-            black_box(&reusable_path);
+            black_box(reusable_path.as_os_str().as_encoded_bytes());
             reused_checksum = reused_checksum
                 .wrapping_add(black_box(reusable_path.as_os_str().len()));
         }
     }
     for id in ids.iter().rev() {
         if store.get_into(*id, &mut reusable_path) {
-            black_box(&reusable_path);
+            black_box(reusable_path.as_os_str().as_encoded_bytes());
             reused_checksum = reused_checksum
                 .wrapping_add(black_box(reusable_path.as_os_str().len()));
         }
