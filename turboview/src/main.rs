@@ -114,9 +114,6 @@ const ROI_DEBOUNCE: Duration = Duration::from_millis(150);
 /// 幻灯片播放间隔（秒）
 const SLIDESHOW_INTERVAL: u64 = 3;
 
-/// 点击与拖拽的判定阈值（像素）
-const CLICK_THRESHOLD: f32 = 5.0;
-
 const ZOOM_MIN: f32 = 0.02;
 const ZOOM_MAX: f32 = 64.0;
 
