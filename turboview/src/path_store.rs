@@ -15,6 +15,14 @@ use std::sync::Arc;
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub struct PathId(u32);
 
+impl PathId {
+    /// Returns the dense storage index without allocating or materializing a path.
+    #[inline]
+    pub fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 struct ImageRecord {
     directory: u32,

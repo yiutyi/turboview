@@ -93,7 +93,7 @@ fn main() {
     let mut index_checksum = 0usize;
     for i in (0..count).step_by(97) {
         if let Some(id) = store.id_at(i) {
-            index_checksum = index_checksum.wrapping_add(black_box(id as usize));
+            index_checksum = index_checksum.wrapping_add(black_box(id.index()));
         }
     }
     let index_ms = elapsed_ms(start);
