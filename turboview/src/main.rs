@@ -19,7 +19,7 @@
 #[cfg(all(target_os = "windows", feature = "wic-decode"))]
 mod wic;
 
-use turboview::{archive, turbo, win32};
+use turboview::{archive, image_list::ImageList, turbo, win32};
 
 use anyhow::{Context as _, Result};
 use archive::{ARCHIVE_EXTENSIONS, IMAGE_EXTENSIONS as SUPPORTED_EXTENSIONS};
@@ -256,8 +256,9 @@ struct RoiOverlay {
 }
 
 struct ImageViewer {
-    /// 同目录下的图片列表（排序后）
-    images: Vec<Arc<Path>>,
+    /// 同目录下的图片列表（排序后）。列表访问统一走 ImageList，
+    /// 便于将来切换紧凑存储后端而不动导航逻辑。
+    images: ImageList,
     index: usize,
     current: Option<LoadedImage>,
     /// 显示缩放（1.0 = 一图素一屏幕像素）
@@ -415,7 +416,7 @@ impl ImageViewer {
         let dark_mode = win32::system_prefers_dark_mode();
 
         let mut viewer = Self {
-            images: images.into_iter().map(Arc::<Path>::from).collect(),
+            images: ImageList::from_paths(images),
             index,
             current: None,
             zoom: 1.0,
@@ -533,7 +534,7 @@ impl ImageViewer {
     }
 
     fn current_path(&self) -> Option<&Path> {
-        self.images.get(self.index).map(|p| p.as_ref())
+        self.images.get(self.index)
     }
 
     /// 切换到指定索引并加载
@@ -553,7 +554,7 @@ impl ImageViewer {
         // 上限为初始长度 + 8，展开会加长列表，绕行因此有界。
         let guard = self.images.len() + 8;
         for _ in 0..guard {
-            let Some(p) = self.images.get(idx).cloned() else {
+            let Some(p) = self.images.get_owned(idx) else {
                 return;
             };
             if !archive::is_archive(&p) || self.archive_failed.contains(p.as_ref()) {
@@ -581,7 +582,7 @@ impl ImageViewer {
         self.sync_archive_info();
         self.update_watch();
         self.reveal_current_dir();
-        let path = self.images[self.index].to_path_buf();
+        let path = self.images.path_at(self.index).expect("index valid");
 
         // 冷启动：预热线程可能已经把这张图解好了（与 UI 初始化并行），
         // 认领后直接走下面的缓存命中分支，连一次异步往返都省掉
@@ -659,14 +660,14 @@ impl ImageViewer {
     /// 把 `idx` 处的压缩包内联展开：包内图片条目插到它后面，成为可导航项。
     /// 展开后翻页会顺序穿过包内所有图，再回到目录里的下一项。
     fn expand_archive_at(&mut self, idx: usize, cx: &mut Context<Self>) -> bool {
-        let path = self.images[idx].to_path_buf();
+        let path = self.images.path_at(idx).expect("index valid");
         let _ = cx;
         match archive::list_images(&path) {
             Ok(names) if !names.is_empty() => {
                 let entries: Vec<PathBuf> = names.iter().map(|n| virtual_path(&path, n)).collect();
                 self.archive_expanded.insert(path.clone());
                 self.archive_counts.insert(path.clone(), names.len());
-                self.images.splice(idx + 1..idx + 1, entries.into_iter().map(Arc::<Path>::from));
+                self.images.splice(idx + 1, entries);
                 true
             }
             Ok(_) => {
@@ -770,7 +771,7 @@ impl ImageViewer {
             .images
             .iter()
             .filter(|p| p.parent() == Some(dir) && split_virtual(p).is_none())
-            .map(|p| p.to_path_buf())
+            .map(Path::to_path_buf)
             .collect();
         let removed: Vec<PathBuf> = old.iter().filter(|p| !new.contains(*p)).cloned().collect();
         let added: Vec<PathBuf> = new.into_iter().filter(|p| !old.contains(p)).collect();
@@ -815,7 +816,7 @@ impl ImageViewer {
             add_arc as isize - rm_arc as isize,
         );
         // first_image 可能已指向被删的文件：用全量有序列表重算这一支
-        self.tree.recompute_first_from(id, &self.images);
+        self.tree.recompute_first_from(id, self.images.as_slice());
 
         if cur_gone && !self.images.is_empty() {
             // 当前图被删：落到原位置的图（越界则取末位），保持浏览位置感
@@ -846,7 +847,7 @@ impl ImageViewer {
         }
         let probe = self
             .current_path()
-            .or_else(|| self.images.get(self.index).map(|p| p.as_ref()))
+            .or_else(|| self.images.get(self.index))
             .map(|p| win32::is_remote(p))
             .unwrap_or(false);
         self.remote = Some(probe);
@@ -1231,8 +1232,8 @@ impl ImageViewer {
         // images 始终按路径有序（insert_level_sorted / find_image_index 都依赖这一点）。
         // 用二分替代逐项线性 position：几十万张图时每次翻页少做 O(N) 全表比较。
         self.prefetch_queue.retain(|p| {
-            let i = imgs.partition_point(|x| x.as_ref() < p.as_path());
-            i < imgs.len() && imgs[i].as_ref() == p.as_path() && i.abs_diff(idx_now) <= 3
+            let i = imgs.partition_point(|x| x < p.as_path());
+            imgs.get(i).is_some_and(|x| x == p.as_path()) && i.abs_diff(idx_now) <= 3
         });
         let deltas: &[isize] = if slow_source {
             &[1]
@@ -1241,7 +1242,7 @@ impl ImageViewer {
         };
         for &delta in deltas {
             let idx = (self.index as isize + delta).rem_euclid(self.images.len() as isize) as usize;
-            let path = self.images[idx].to_path_buf();
+            let path = self.images.path_at(idx).expect("index valid");
             // 压缩包不是图片：翻到它时才展开，不预取
             if archive::is_archive(&path) {
                 continue;
@@ -1267,10 +1268,11 @@ impl ImageViewer {
         self.reset_state();
         match archive::list_images(&archive_path) {
             Ok(names) if !names.is_empty() => {
-                self.images = names
+                let entries: Vec<PathBuf> = names
                     .iter()
-                    .map(|n| Arc::<Path>::from(virtual_path(&archive_path, n)))
+                    .map(|n| virtual_path(&archive_path, n))
                     .collect();
+                self.images.replace(entries);
                 self.goto(0, cx);
                 if let Some(root) = archive_path.parent().map(Path::to_path_buf) {
                     self.seed_root(root, cx);
@@ -1408,17 +1410,20 @@ impl ImageViewer {
         let mut batch = batch;
         batch.sort_unstable();
         let cur = self.current_path().map(Path::to_path_buf); // 合并会移动元素，先记下当前图
-        let lo = self.images.partition_point(|p| p.as_ref() < batch[0].as_path());
-        let hi = self.images.partition_point(|p| p.as_ref() <= batch[batch.len() - 1].as_path());
+        let lo = self.images.partition_point(|p| p < batch[0].as_path());
+        let hi = self
+            .images
+            .partition_point(|p| p <= batch[batch.len() - 1].as_path());
         let keep: HashSet<&PathBuf> = batch.iter().collect();
-        let preserved: Vec<PathBuf> = self.images[lo..hi]
-            .iter()
+        let preserved: Vec<PathBuf> = self
+            .images
+            .slice_paths(lo, hi)
             .filter(|p| split_virtual(p).is_some_and(|(a, _)| keep.contains(&a)))
-            .map(|p| p.to_path_buf())
+            .map(Path::to_path_buf)
             .collect();
         batch.extend(preserved);
         batch.sort_unstable();
-        self.images.splice(lo..hi, batch.into_iter().map(Arc::<Path>::from));
+        self.images.splice_range(lo, hi, batch);
         if let Some(c) = cur {
             if let Some(i) = self.find_image_index(&c) {
                 self.index = i;
@@ -1998,12 +2003,7 @@ impl ImageViewer {
 
     /// 在 images 里定位路径：列表恒有序（insert_images_sorted 保证），二分 O(log N)
     fn find_image_index(&self, path: &Path) -> Option<usize> {
-        let i = self.images.partition_point(|p| p.as_ref() < path);
-        if i < self.images.len() && self.images[i].as_ref() == path {
-            Some(i)
-        } else {
-            None
-        }
+        self.images.find_index(path)
     }
 
     /// 侧边栏行：箭头点击 = 展开/收起（未扫描的目录先扫该层）。
@@ -2235,7 +2235,7 @@ impl ImageViewer {
                 .map(Path::to_path_buf)
                 .unwrap_or_else(|| path.clone());
             self.reset_state();
-            self.images = vec![Arc::<Path>::from(path)];
+            self.images.replace(vec![path]);
             self.goto(0, cx);
             self.seed_root(root, cx);
         }
@@ -3830,7 +3830,7 @@ fn main() {
                                 .parent()
                                 .map(Path::to_path_buf)
                                 .unwrap_or_else(|| p.clone());
-                            viewer.images = vec![Arc::<Path>::from(p.clone())];
+                            viewer.images.replace(vec![p.clone()]);
                             viewer.goto(0, cx);
                             viewer.seed_root(root, cx);
                         }
