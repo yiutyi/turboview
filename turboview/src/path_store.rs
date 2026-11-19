@@ -503,8 +503,10 @@ mod tests {
         let first = store.insert(Path::new(r"C:\photos\one.jpg"));
         let second = store.insert(Path::new(r"D:\archive\nested\two.png"));
         let mut buffer = PathBuf::from(r"X:\an-existing-long-buffer\placeholder.bin");
+        let initial_capacity = buffer.capacity();
 
         assert!(store.get_into(first, &mut buffer));
+        assert!(buffer.capacity() >= initial_capacity, "reusable buffer should retain its capacity");
         assert_eq!(buffer, PathBuf::from(r"C:\photos\one.jpg"));
         assert!(store.get_into(second, &mut buffer));
         assert_eq!(buffer, PathBuf::from(r"D:\archive\nested\two.png"));
