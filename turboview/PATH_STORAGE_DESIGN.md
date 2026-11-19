@@ -64,7 +64,7 @@ cargo run --release --bin pathbench -- 1000000 deep
 ```
 
 The benchmark reports construction, sorting, sampled indexed access, forward and
-reverse sequential traversal, path materialization, and an approximate owned-heap
+reverse sequential ID traversal, sampled path materialization, full forward/reverse path materialization, and an approximate owned-heap
 estimate for `Vec<PathBuf>`, `Vec<Arc<Path>`, and `PathStore + PathId`. Run all three on the same local SSD/library and
 repeat at least three times. The `flat` profile uses 4,096 shallow shared directories. The `deep` profile
 uses six nested directory components and up to one leaf directory per eight
