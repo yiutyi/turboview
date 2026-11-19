@@ -40,11 +40,12 @@ impl<'a> PathParts<'a> {
     /// Materialize this pair into a caller-owned buffer, reusing its allocation.
     #[inline]
     pub fn write_to(self, target: &mut PathBuf) {
-        // Clone the interned directory directly into the reusable buffer. This
-        // avoids reparsing it through PathBuf::push on every materialization.
-        // PathBuf::clone_from reuses the destination OsString allocation when
-        // its capacity is sufficient; only the filename bytes are then appended.
-        target.clone_from(&self.directory.to_path_buf());
+        // Copy the interned directory bytes directly into the reusable OsString.
+        // This avoids constructing a temporary PathBuf for every materialization.
+        // PathBuf::push then appends the filename with platform-correct separators.
+        let os = target.as_mut_os_string();
+        os.clear();
+        os.push(self.directory.as_os_str());
         target.push(self.file_name);
     }
 }
