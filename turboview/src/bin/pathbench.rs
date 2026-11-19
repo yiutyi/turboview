@@ -164,7 +164,23 @@ fn main() {
         }
     }
     let materialize_ms = elapsed_ms(start);
-    println!("PathStore + ID     build {build:9.2} ms · sort {sort:9.2} ms · indexed {index_ms:9.2} ms · fwd+rev-id {traversal_ms:9.2} ms · materialize {materialize_ms:9.2} ms · estimated~{:.2} MiB · dirs {}",
+
+    let start = Instant::now();
+    let mut full_materialize_checksum = 0usize;
+    for id in &ids {
+        if let Some(path) = store.get(*id) {
+            full_materialize_checksum = full_materialize_checksum
+                .wrapping_add(black_box(path.as_os_str().len()));
+        }
+    }
+    for id in ids.iter().rev() {
+        if let Some(path) = store.get(*id) {
+            full_materialize_checksum = full_materialize_checksum
+                .wrapping_add(black_box(path.as_os_str().len()));
+        }
+    }
+    let full_materialize_ms = elapsed_ms(start);
+    println!("PathStore + ID     build {build:9.2} ms · sort {sort:9.2} ms · indexed {index_ms:9.2} ms · fwd+rev-id {traversal_ms:9.2} ms · sampled-get {materialize_ms:9.2} ms · full-get-fwd+rev {full_materialize_ms:9.2} ms · estimated~{:.2} MiB · dirs {}",
         bytes as f64 / 1_048_576.0, store.directory_count());
     black_box(index_checksum);
     black_box(traversal_checksum);
