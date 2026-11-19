@@ -72,3 +72,38 @@ jobs:
 
       - name: Build release application
         run: cargo build --release --locked
+
+      - name: Assemble portable package
+        shell: pwsh
+        working-directory: .
+        run: |
+          $ErrorActionPreference = "Stop"
+          $dist = Join-Path $env:RUNNER_TEMP "TurboView-portable"
+          New-Item -ItemType Directory -Force -Path $dist | Out-Null
+          $exe = Join-Path $env:GITHUB_WORKSPACE "turboview\target\release\turboview.exe"
+          if (!(Test-Path $exe)) { throw "Release executable not found: $exe" }
+          Copy-Item $exe $dist
+          Copy-Item (Join-Path $env:GITHUB_WORKSPACE "README.md") $dist
+          Copy-Item (Join-Path $env:GITHUB_WORKSPACE "LICENSE.md") $dist
+          @'
+          TurboView - Windows x64 Portable
+          =================================
+
+          Run turboview.exe directly. No Rust or Cargo installation is required.
+          Keep the executable and the accompanying license/readme files together.
+
+          This package is built from the main branch commit selected by this workflow.
+          Windows system graphics components and a compatible Microsoft Visual C++
+          runtime may still be provided by Windows or need to be installed separately.
+          '@ | Set-Content -Encoding UTF8 (Join-Path $dist "PORTABLE-README.txt")
+          $zip = Join-Path $env:RUNNER_TEMP "TurboView-Windows-x64-portable.zip"
+          Compress-Archive -Path (Join-Path $dist "*") -DestinationPath $zip -Force
+          "PORTABLE_ZIP=$zip" >> $env:GITHUB_OUTPUT
+
+      - name: Upload portable Windows package
+        uses: actions/upload-artifact@v4
+        with:
+          name: TurboView-Windows-x64-portable
+          path: ${{ runner.temp }}/TurboView-Windows-x64-portable.zip
+          if-no-files-found: error
+          retention-days: 30
