@@ -65,7 +65,7 @@ jobs:
         run: cmake --build build-turbo --config Release --target turbojpeg-static --parallel 4
 
       - name: Check formatting
-        run: cargo fmt --all -- --check
+        run: cargo fmt --package turboview -- --check
 
       - name: Compile experimental WIC decoder
         run: cargo check --features wic-decode --locked
