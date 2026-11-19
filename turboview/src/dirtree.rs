@@ -184,7 +184,7 @@ impl DirTree {
             let path = self.nodes[c].path.clone();
             // images 全量有序：二分定位到前缀起点后顺序扫描，命中即停。
             // 原实现对每个祖先线性 find，几十万张图 × 深度 = 百万级 starts_with。
-            let start = images.partition_point(|p| p.as_path() < path.as_path());
+            let start = images.partition_point(|p| p.as_path() < path.as_ref());
             self.nodes[c].first_image = images[start..]
                 .iter()
                 .find(|p| p.starts_with(&path))
