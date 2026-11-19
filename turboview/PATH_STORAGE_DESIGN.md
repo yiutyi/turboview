@@ -61,9 +61,9 @@ cargo run --release --bin pathbench -- 100000
 cargo run --release --bin pathbench -- 1000000
 ```
 
-The benchmark reports construction, sorting, indexed navigation/materialization,
-and an approximate owned-heap estimate for `Vec<PathBuf>`, `Vec<Arc<Path>`,
-and `PathStore + PathId`. Run all three on the same local SSD/library and
+The benchmark reports construction, sorting, sampled indexed access, forward and
+reverse sequential traversal, path materialization, and an approximate owned-heap
+estimate for `Vec<PathBuf>`, `Vec<Arc<Path>`, and `PathStore + PathId`. Run all three on the same local SSD/library and
 repeat at least three times. The synthetic dataset uses 4,096 shared directories;
 it is intended for representation comparisons, not to predict every real folder
 distribution. Record the Windows build, CPU model, RAM, storage type, and median
@@ -83,15 +83,16 @@ layout are not measured.
   reclamation. A production integration must either build a fresh store for a
   completed scan and atomically swap generations, or implement and test a
   reclaiming strategy. Repeated refreshes must not retain deleted paths forever.
-- `pathbench`'s current PathStore index loop calls `id_at(i)`, which returns
-  the insertion ID for dense storage position. It does not exercise the sorted
-  navigation array. The benchmark must measure `ids[i]` after sorting and
-  include next/previous traversal before its navigation figures are accepted.
+- `pathbench` now samples the sorted `ids[i]` array and measures forward and
+  reverse sequential traversal of that sorted ID list. Its PathStore traversal
+  metric measures ID access only; path materialization is measured separately.
+  The Vec baselines traverse their sorted paths in both directions.
 - The current synthetic dataset has 4,096 shared directories and regular short
   filenames. Add a second profile with deep paths and many unique directories.
 - The current benchmark should be run at 100K, 1M, and 10M entries where machine
   memory permits, with repeated medians. Its estimates must not be presented as
-  process RSS.
+  process RSS. The synthetic profile still uses 4,096 shared directories and
+  does not yet model deep paths or high-cardinality directory layouts.
 
 The current sort-key comparator is an optimization already present in the code;
 the remaining acceptance work is to validate it broadly, correct the navigation
