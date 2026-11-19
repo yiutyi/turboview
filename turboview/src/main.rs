@@ -556,7 +556,7 @@ impl ImageViewer {
             let Some(p) = self.images.get(idx).cloned() else {
                 return;
             };
-            if !archive::is_archive(p) || self.archive_failed.contains(p.as_ref()) {
+            if !archive::is_archive(&p) || self.archive_failed.contains(p.as_ref()) {
                 break;
             }
             if !self.archive_expanded.contains(p.as_ref()) && !self.expand_archive_at(idx, cx) {
