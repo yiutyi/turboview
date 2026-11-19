@@ -4,6 +4,7 @@ pub mod archive;
 pub mod dirtree;
 pub mod image_list;
 pub mod path_store;
+pub mod prefix_path_store;
 pub mod scanner;
 pub mod turbo;
 pub mod win32;
