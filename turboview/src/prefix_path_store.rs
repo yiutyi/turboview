@@ -5,7 +5,8 @@ use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf, Prefix};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
-pub struct PrefixPathId(u32);\nimpl PrefixPathId { pub fn index(self) -> usize { self.0 as usize } }
+pub struct PrefixPathId(u32);
+impl PrefixPathId { pub fn index(self) -> usize { self.0 as usize } }
 #[derive(Clone, Copy)] struct Range { start: u32, len: u32 }
 impl Range { fn slice(self) -> std::ops::Range<usize> { self.start as usize..self.start as usize + self.len as usize } }
 #[derive(Clone, Copy)] struct Node { parent: u32, bytes: Range, depth: u32 }
