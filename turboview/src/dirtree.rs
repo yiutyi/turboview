@@ -190,7 +190,7 @@ impl DirTree {
             self.nodes[c].first_image = images[start..]
                 .iter()
                 .find(|p| p.starts_with(&path))
-                .map(|p| Arc::from(p.as_path().to_path_buf()));
+                .map(|p| Arc::from(p.as_ref().to_path_buf()));
             cur = self.nodes[c].parent;
         }
         self.dirty = true;
