@@ -111,6 +111,6 @@ fn main() {
     black_box(index_checksum);
     black_box(checksum);
 
-    println!("\nNote: PathStore sort currently materializes PathBuf values per comparison.");
-    println!("Do not integrate unless real-library results show a memory win without navigation regressions.");
+    println!("\nNote: PathStore sort compares precomputed byte keys (no PathBuf materialization).");
+    println!("Validate against a real library before integrating; synthetic paths share short roots.");
 }
