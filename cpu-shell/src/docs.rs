@@ -47,7 +47,6 @@ mod win_list {
     const FIND_FIRST_EX_LARGE_FETCH: u32 = 0x2;
 
     #[repr(C)]
-    #[derive(Default)]
     struct FindData {
         attrs: u32,
         ctime: [u32; 2],
@@ -58,6 +57,14 @@ mod win_list {
         reserved: u32,
         name: [u16; 260],
         alt: [u16; 14],
+    }
+
+    impl FindData {
+        /// `[u16; 260]` has no `Default` impl, and the buffer must be zeroed
+        /// because FindNextFileW fills it in place.
+        fn zeroed() -> Self {
+            unsafe { std::mem::zeroed() }
+        }
     }
 
     #[link(name = "kernel32")]
@@ -83,7 +90,7 @@ mod win_list {
         let mut pattern: Vec<u16> = dir.join("*").as_os_str().encode_wide().collect();
         pattern.push(0);
         unsafe {
-            let mut fd = FindData::default();
+            let mut fd = FindData::zeroed();
             // FindExInfoBasic skips the 8.3 short name lookup, which is the
             // single biggest cost when a directory holds millions of entries.
             let h = FindFirstFileExW(
@@ -101,7 +108,7 @@ mod win_list {
             loop {
                 if fd.attrs & FILE_ATTRIBUTE_DIRECTORY == 0 {
                     let name = wide_to_string(&fd.name);
-                    if !name.is_empty() && is_image(&Path::new(&name)) {
+                    if !name.is_empty() && super::is_image(&Path::new(&name)) {
                         out.push(name);
                     }
                 }
