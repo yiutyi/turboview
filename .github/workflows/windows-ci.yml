@@ -83,11 +83,11 @@ jobs:
           $exe = Join-Path $env:GITHUB_WORKSPACE "turboview\target\release\turboview.exe"
           if (!(Test-Path $exe)) { throw "Release executable not found: $exe" }
           Copy-Item $exe $dist
-          Copy-Item (Join-Path $env:GITHUB_WORKSPACE "turboview\\README.md") (Join-Path $dist "README.md")
+          Copy-Item (Join-Path $env:GITHUB_WORKSPACE "turboview\README.md") (Join-Path $dist "README.md")
           Copy-Item (Join-Path $env:GITHUB_WORKSPACE "LICENSE.md") (Join-Path $dist "LIBJPEG-TURBO-LICENSE.md")
           Copy-Item (Join-Path $env:GITHUB_WORKSPACE "README.ijg") (Join-Path $dist "README.ijg")
-          Copy-Item (Join-Path $env:GITHUB_WORKSPACE "turboview\\CHANGELOG.md") $dist
-          @'
+          Copy-Item (Join-Path $env:GITHUB_WORKSPACE "turboview\CHANGELOG.md") $dist
+          @"
           TurboView 0.2.0 - Windows x64 Portable
           ======================================
 
@@ -100,7 +100,7 @@ jobs:
           This package is built from the exact Git commit associated with this workflow run.
           Windows system graphics components and a compatible Microsoft Visual C++ runtime
           may still be provided by Windows or need to be installed separately.
-          '@ | Set-Content -Encoding UTF8 (Join-Path $dist "PORTABLE-README.txt")
+          "@ | Set-Content -Encoding UTF8 (Join-Path $dist "PORTABLE-README.txt")
           $zip = Join-Path $env:RUNNER_TEMP "TurboView-Windows-x64-portable.zip"
           Compress-Archive -Path (Join-Path $dist "*") -DestinationPath $zip -Force
           "PORTABLE_ZIP=$zip" >> $env:GITHUB_OUTPUT
