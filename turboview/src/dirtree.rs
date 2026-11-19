@@ -180,7 +180,7 @@ impl DirTree {
     /// `images` 必须是**全量且已排序**的列表（即 ImageViewer::images）：
     /// 排序后第一个落在某子树内的路径就是该子树的最小路径，与增量维护的
     /// 语义一致。文件增删后旧的 first_image 可能已失效，用它一次性修正。
-    pub fn recompute_first_from(&mut self, id: usize, images: &[Arc<PathBuf>]) {
+    pub fn recompute_first_from(&mut self, id: usize, images: &[Arc<Path>]) {
         let mut cur = Some(id);
         while let Some(c) = cur {
             let path = self.nodes[c].path.clone();
