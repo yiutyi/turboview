@@ -2,6 +2,9 @@
 
 ## 0.2.0
 
+- Remove the Windows GPUI jump-list parser's ICU DLL dependency by using the equivalent bounded UTF-16 terminator scan.
+- Statically link the MSVC C/C++ runtime across Rust, UnRAR and libjpeg-turbo so the portable package does not require the Visual C++ Redistributable.
+- Add a CI import-table audit that rejects ICU and VC++ runtime DLL dependencies in the packaged executable.
 - Consolidate the previously merged viewer UX, large-directory-tree memory, remote-navigation, WebP fallback, PNG decode-cap and centered-fit improvements from the stable main line.
 - Add a bounded priority-aware pending decode queue and deduplication/promotion semantics.
 - Add task identity tracking and cooperative cancellation tokens to prevent stale task completions from publishing results or clearing newer task state.
