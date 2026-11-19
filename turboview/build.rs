@@ -35,8 +35,8 @@ fn main() {
         let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR is set"));
         let rc_file = out_dir.join("turboview-icon.rc");
         let res_file = out_dir.join("turboview-icon.res");
-        let icon_path = icon.to_string_lossy().replace('\\\\', "\\\\\\\\").replace('"', "\\\\"");
-        std::fs::write(&rc_file, format!("1 ICON \"{}\"\\n", icon_path))
+        let icon_path = icon.to_string_lossy().replace('\\', "/");
+        std::fs::write(&rc_file, format!("1 ICON \"{}\"\n", icon_path))
             .expect("write Windows icon resource script");
         let status = Command::new("rc.exe")
             .arg("/nologo")
