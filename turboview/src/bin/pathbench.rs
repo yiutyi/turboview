@@ -340,6 +340,7 @@ fn main() {
     let mut prefix_materialize_checksum = 0usize;
     for id in &prefix_ids {
         if let Some(path) = prefix_store.get(*id) {
+            let path = black_box(path);
             prefix_materialize_checksum = prefix_materialize_checksum.wrapping_add(black_box(path.as_os_str().len()));
         }
     }
