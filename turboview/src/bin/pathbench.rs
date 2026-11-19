@@ -12,10 +12,25 @@ use std::sync::Arc;
 use std::time::Instant;
 use turboview::path_store::PathStore;
 
-fn make_path(i: usize, count: usize) -> PathBuf {
-    let dir = (i * 37) % 4096;
+fn make_path(i: usize, count: usize, deep: bool) -> PathBuf {
     let file = (i * 7919) % count.max(1);
-    PathBuf::from(format!(r"D:\Photos\{dir:04}\IMG_{file:08}.jpg"))
+    if deep {
+        // Eight entries per leaf directory; six numeric components create a
+        // high-cardinality, deeply nested directory distribution.
+        let dir = i / 8;
+        PathBuf::from(format!(
+            r"D:\Archive\G{:03}\Y{:03}\M{:03}\C{:03}\B{:03}\S{:03}\IMG_{file:08}.jpg",
+            dir / 1_000_000_000,
+            (dir / 1_000_000) % 1_000,
+            (dir / 1_000) % 1_000,
+            (dir / 100) % 10,
+            (dir / 10) % 10,
+            dir % 10,
+        ))
+    } else {
+        let dir = (i * 37) % 4096;
+        PathBuf::from(format!(r"D:\Photos\{dir:04}\IMG_{file:08}.jpg"))
+    }
 }
 
 fn elapsed_ms(start: Instant) -> f64 {
@@ -23,22 +38,33 @@ fn elapsed_ms(start: Instant) -> f64 {
 }
 
 fn main() {
-    let count = std::env::args()
-        .nth(1)
+    let mut args = std::env::args().skip(1);
+    let count = args
+        .next()
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(100_000);
+    let profile = args.next().unwrap_or_else(|| "flat".to_string());
+    let deep = match profile.as_str() {
+        "flat" => false,
+        "deep" => true,
+        _ => {
+            eprintln!("profile must be 'flat' or 'deep'");
+            std::process::exit(2);
+        }
+    };
+    let directory_capacity = if deep { count.div_ceil(8) } else { 4096 };
     if count == 0 || count > u32::MAX as usize {
         eprintln!("entry count must be in 1..=u32::MAX");
         std::process::exit(2);
     }
 
     println!("TurboView path storage benchmark · {count} entries");
-    println!("Synthetic Windows paths, 4096 shared directories, deterministic order");
+    println!("Synthetic Windows paths · profile={profile} · estimated unique directories={directory_capacity} · deterministic order");
     println!("Times are wall-clock; memory is an approximate owned-heap estimate.\n");
 
     // Vec<PathBuf>
     let start = Instant::now();
-    let mut paths: Vec<PathBuf> = (0..count).map(|i| make_path(i, count)).collect();
+    let mut paths: Vec<PathBuf> = (0..count).map(|i| make_path(i, count, deep)).collect();
     let build = elapsed_ms(start);
     let bytes: usize = paths.iter().map(|p| std::mem::size_of::<PathBuf>() + p.as_os_str().len()).sum();
     let start = Instant::now();
@@ -68,7 +94,7 @@ fn main() {
     // Vec<Arc<Path>>
     let start = Instant::now();
     let mut paths: Vec<Arc<Path>> = (0..count)
-        .map(|i| Arc::<Path>::from(make_path(i, count)))
+        .map(|i| Arc::<Path>::from(make_path(i, count, deep)))
         .collect();
     let build = elapsed_ms(start);
     let bytes: usize = paths.iter().map(|p| std::mem::size_of::<Arc<Path>>() + p.as_os_str().len()).sum();
@@ -99,11 +125,11 @@ fn main() {
 
     // PathStore + compact integer IDs
     let start = Instant::now();
-    // Names are "IMG_NNNNNNNN.jpg" (15 bytes) + 1 tag + 1 terminator = 17 bytes.
-    let mut store = PathStore::with_capacity(count, count * 20, 4096);
+    // Reserve directory metadata for the selected distribution; filename bytes are shared by both profiles.
+    let mut store = PathStore::with_capacity(count, count * 20, directory_capacity);
     let mut ids = Vec::with_capacity(count);
     for i in 0..count {
-        ids.push(store.insert(Path::new(&make_path(i, count))));
+        ids.push(store.insert(Path::new(&make_path(i, count, deep))));
     }
     let build = elapsed_ms(start);
     let bytes = store.storage_bytes() + ids.capacity() * std::mem::size_of_val(&ids[0]);
@@ -144,5 +170,6 @@ fn main() {
     black_box(checksum);
 
     println!("\nNote: PathStore sort compares precomputed byte keys (no PathBuf materialization).");
-    println!("Validate against a real library before integrating; synthetic paths share short roots.");
+    println!("Profiles: flat = 4,096 shallow shared directories; deep = six nested components and up to one leaf directory per eight entries.");
+    println!("Validate against a real library before integrating; synthetic profiles are not a substitute for real paths.");
 }
