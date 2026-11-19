@@ -846,7 +846,7 @@ impl ImageViewer {
         }
         let probe = self
             .current_path()
-            .or_else(|| self.images.get(self.index))
+            .or_else(|| self.images.get(self.index).map(|p| p.as_ref()))
             .map(|p| win32::is_remote(p))
             .unwrap_or(false);
         self.remote = Some(probe);
