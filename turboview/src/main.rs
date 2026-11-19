@@ -3627,6 +3627,16 @@ fn make_logo_image() -> Arc<RenderImage> {
 }
 
 fn main() {
+    // GUI builds have no console; preserve startup failures for diagnosis on
+    // older Windows systems where a panic would otherwise look like a silent exit.
+    std::panic::set_hook(Box::new(|info| {
+        use std::io::Write;
+        let path = std::env::temp_dir().join("turboview-startup.log");
+        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+            let _ = writeln!(file, "[PANIC] {info}");
+            let _ = writeln!(file, "[BACKTRACE] {}", std::backtrace::Backtrace::force_capture());
+        }
+    }));
     trace("entry");
     // 必须第一个调用：PerMonitorV2 DPI 感知。否则 125%+ 缩放的屏幕上
     // 窗口按 1:1 物理像素渲染，“最大化”只占屏幕左上角一小块。
@@ -3853,8 +3863,9 @@ fn main() {
 // 正式运行时零开销（一次环境变量查询），用于定位冷启动各阶段耗时。
 // ---------------------------------------------------------------------------
 fn trace_enabled() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("TV_TRACE").is_some())
+    // Keep a tiny startup trace in GUI builds: without a console, silent
+    // platform/window initialization failures are otherwise hard to diagnose.
+    true
 }
 
 fn trace(msg: &str) {
