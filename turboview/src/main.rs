@@ -2382,7 +2382,7 @@ impl ImageViewer {
                 .into_any_element()
         } else {
             let colors_in = colors.clone();
-            let dark = usize::from(self.dark_mode);
+            let dark = (self.dark_mode as usize);
             div()
                 .flex_1()
                 .min_h_0()
@@ -2955,7 +2955,7 @@ impl Render for ImageViewer {
                     .text_xs()
                     .text_color(colors.text)
                     .child(
-                        img(ImageSource::Render(self.status_icons[usize::from(self.dark_mode)][0].clone()))
+                        img(ImageSource::Render(self.status_icons[(self.dark_mode as usize)][0].clone()))
                             .w(px(15.0))
                             .h(px(15.0))
                             .flex_shrink_0(),
@@ -2983,7 +2983,7 @@ impl Render for ImageViewer {
                 .cursor_pointer()
                 .hover(|s| s.opacity(0.6))
                 .child(
-                    img(ImageSource::Render(self.status_icons[usize::from(self.dark_mode)][1].clone()))
+                    img(ImageSource::Render(self.status_icons[(self.dark_mode as usize)][1].clone()))
                         .w(px(15.0))
                         .h(px(15.0))
                         .flex_shrink_0(),
@@ -3021,7 +3021,7 @@ impl Render for ImageViewer {
                 .cursor_pointer()
                 .hover(|s| s.opacity(0.6))
                 .child(
-                    img(ImageSource::Render(self.status_icons[usize::from(self.dark_mode)][2].clone()))
+                    img(ImageSource::Render(self.status_icons[(self.dark_mode as usize)][2].clone()))
                         .w(px(15.0))
                         .h(px(15.0))
                         .flex_shrink_0(),
@@ -3060,7 +3060,7 @@ impl Render for ImageViewer {
                 .cursor_pointer()
                 .hover(|s| s.opacity(0.6))
                 .child(
-                    img(ImageSource::Render(self.status_icons[usize::from(self.dark_mode)][3].clone()))
+                    img(ImageSource::Render(self.status_icons[(self.dark_mode as usize)][3].clone()))
                         .w(px(15.0))
                         .h(px(15.0))
                         .flex_shrink_0(),
@@ -3096,7 +3096,7 @@ impl Render for ImageViewer {
                 .hover(|s| s.opacity(0.6))
                 .child(
                     img(ImageSource::Render(
-                        self.theme_icons[usize::from(self.dark_mode)].clone(),
+                        self.theme_icons[(self.dark_mode as usize)].clone(),
                     ))
                     .w(px(12.0))
                     .h(px(12.0))
@@ -3127,7 +3127,7 @@ impl Render for ImageViewer {
                 .hover(|s| s.opacity(0.72))
                 .child(
                     img(ImageSource::Render(
-                        self.status_icons[usize::from(self.dark_mode)][4].clone(),
+                        self.status_icons[(self.dark_mode as usize)][4].clone(),
                     ))
                     .w(px(15.0))
                     .h(px(15.0))
