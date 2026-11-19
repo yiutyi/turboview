@@ -120,7 +120,7 @@ jobs:
           '@ | Set-Content -Encoding UTF8 (Join-Path $dist "PORTABLE-README.txt")
           $manifest = @()
           Get-ChildItem -File -Recurse $dist | ForEach-Object {
-            $relative = $_.FullName.Substring($dist.Length + 1).Replace("\\", "/")
+            $relative = $_.FullName.Substring($dist.Length + 1).Replace('\', '/')
             $hash = (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLowerInvariant()
             $manifest += "$hash  $relative"
           }
