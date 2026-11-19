@@ -68,9 +68,9 @@ actions!(
 /// 侧边栏宽度（像素）
 const SIDEBAR_WIDTH: f32 = 280.0;
 /// 侧边栏行高
-const ROW_HEIGHT: f32 = 22.0;
+const ROW_HEIGHT: f32 = 25.0;
 /// 目录树每级缩进宽度
-const TREE_INDENT: f32 = 14.0;
+const TREE_INDENT: f32 = 12.0;
 
 /// 解码输出的最长边上限。实际值按**窗口物理尺寸**自适应（见
 /// `ImageViewer::decode_max_dim`）：1366×768 的机器只需要 ~1500，
@@ -132,6 +132,8 @@ const ICON_SLIDESHOW: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width
 const ICON_ARCHIVE: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 7.5h17v13h-17z"/><path d="M3.5 7.5 12 3l8.5 4.5"/><path d="M10.5 7.5v2.5h3V7.5"/></svg>"##;
 /// 原图 1:1（像素网格 + 角标：每格 = 一个原始像素）
 const ICON_ORIGINAL: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="1.5"/><path d="M9 3v18M15 3v18M3 9h18M3 15h18"/></svg>"##;
+/// 全屏（四角向外展开）
+const ICON_FULLSCREEN: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M3 16v3a2 2 0 0 0 2 2h3M21 16v3a2 2 0 0 1-2 2h-3"/></svg>"##;
 /// 文件夹（闭合）：单色矢量轮廓，启动时按主题栅格化
 const ICON_FOLDER: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="1.9" stroke-linejoin="round"><path d="M3 6.5h6l2 2.5h10v10.5H3z"/></svg>"##;
 /// 文件夹（展开）
@@ -372,6 +374,8 @@ struct ImageViewer {
     folder_icons: [[Arc<RenderImage>; 2]; 2],
     /// 状态栏主题图标：[明暗]，显示当前所处主题
     theme_icons: [Arc<RenderImage>; 2],
+    /// 状态栏图标：[明暗][压缩包、随机、幻灯片、原图、全屏]，启动时栅格化
+    status_icons: [[Arc<RenderImage>; 5]; 2],
 }
 
 impl ImageViewer {
@@ -484,6 +488,22 @@ impl ImageViewer {
             theme_icons: [
                 make_mono_icon(ICON_THEME_SUN, 20, 0x5A5A5A),
                 make_mono_icon(ICON_THEME_MOON, 20, 0xC8C8C8),
+            ],
+            status_icons: [
+                [
+                    make_mono_icon(ICON_ARCHIVE, 20, 0x64748B),
+                    make_mono_icon(ICON_RANDOM, 20, 0x64748B),
+                    make_mono_icon(ICON_SLIDESHOW, 20, 0x64748B),
+                    make_mono_icon(ICON_ORIGINAL, 20, 0x64748B),
+                    make_mono_icon(ICON_FULLSCREEN, 20, 0x64748B),
+                ],
+                [
+                    make_mono_icon(ICON_ARCHIVE, 20, 0xAAB4C3),
+                    make_mono_icon(ICON_RANDOM, 20, 0xAAB4C3),
+                    make_mono_icon(ICON_SLIDESHOW, 20, 0xAAB4C3),
+                    make_mono_icon(ICON_ORIGINAL, 20, 0xAAB4C3),
+                    make_mono_icon(ICON_FULLSCREEN, 20, 0xAAB4C3),
+                ],
             ],
         };
         viewer.spawn_watch_pump(cx);
@@ -2491,7 +2511,7 @@ impl ImageViewer {
                                     .overflow_hidden()
                                     .whitespace_nowrap()
                                     .text_ellipsis()
-                                    .child(row.name.clone());
+                                    .child(row.name.to_string());
 
                                 // 计数：0 张的目录不显示（避免整屏 "0" 噪声）
                                 let count_text = if row.count == 0 && row.archives == 0 {
@@ -2716,7 +2736,7 @@ impl Render for ImageViewer {
         // 状态栏走普通文档流（根 = 纵向 flex：内容行 flex_1 + 状态栏 26px），
         // 图片区高度 = 视口高 − 状态栏。以前用 absolute + bottom_0 定位状态栏，
         // 在部分环境下整条不渲染，改为文档流后不再依赖视口数学。
-        let area_h = viewport.height - px(26.0);
+        let area_h = viewport.height - px(30.0);
 
         // 计算图片显示几何（先算好再赋值，避免借用冲突）
         // 注意：offset 以图片区（侧边栏右侧）为坐标系
@@ -2933,10 +2953,9 @@ impl Render for ImageViewer {
                     .text_xs()
                     .text_color(colors.text)
                     .child(
-                        svg()
-                            .data(ICON_ARCHIVE)
-                            .w(px(12.0))
-                            .h(px(12.0))
+                        img(ImageSource::Render(self.status_icons[usize::from(self.dark_mode)][0].clone()))
+                            .w(px(15.0))
+                            .h(px(15.0))
                             .flex_shrink_0(),
                     )
                     .child(info.clone())
@@ -2962,10 +2981,9 @@ impl Render for ImageViewer {
                 .cursor_pointer()
                 .hover(|s| s.opacity(0.6))
                 .child(
-                    svg()
-                        .data(ICON_RANDOM)
-                        .w(px(12.0))
-                        .h(px(12.0))
+                    img(ImageSource::Render(self.status_icons[usize::from(self.dark_mode)][1].clone()))
+                        .w(px(15.0))
+                        .h(px(15.0))
                         .flex_shrink_0(),
                 )
                 .child(if self.random_mode {
@@ -3001,10 +3019,9 @@ impl Render for ImageViewer {
                 .cursor_pointer()
                 .hover(|s| s.opacity(0.6))
                 .child(
-                    svg()
-                        .data(ICON_SLIDESHOW)
-                        .w(px(12.0))
-                        .h(px(12.0))
+                    img(ImageSource::Render(self.status_icons[usize::from(self.dark_mode)][2].clone()))
+                        .w(px(15.0))
+                        .h(px(15.0))
                         .flex_shrink_0(),
                 )
                 .child(if self.slideshow {
@@ -3041,10 +3058,9 @@ impl Render for ImageViewer {
                 .cursor_pointer()
                 .hover(|s| s.opacity(0.6))
                 .child(
-                    svg()
-                        .data(ICON_ORIGINAL)
-                        .w(px(12.0))
-                        .h(px(12.0))
+                    img(ImageSource::Render(self.status_icons[usize::from(self.dark_mode)][3].clone()))
+                        .w(px(15.0))
+                        .h(px(15.0))
                         .flex_shrink_0(),
                 )
                 .child(if self.original_view {
@@ -3141,16 +3157,16 @@ impl Render for ImageViewer {
             .id("status-bar")
             .w_full()
             .flex_shrink_0()
-            .h(px(26.0))
-            .bg(colors.background)
+            .h(px(30.0))
+            .bg(colors.container)
             .border_t_1()
             .border_color(colors.border)
             .flex()
             .flex_row()
             .items_center()
             .px_3()
-            .gap(px(8.0))
-            .text_sm()
+            .gap(px(10.0))
+            .text_xs()
             .text_color(colors.text)
             .children(status_leading.into_iter())
             // 左侧：P 字 logo（品牌位图，彩色）
@@ -3670,7 +3686,8 @@ fn main() {
             KeyBinding::new("_", ZoomOut, None),
             KeyBinding::new("0", ZoomFit, None),
             KeyBinding::new("1", ZoomActual, None),
-            KeyBinding::new("f", ToggleFastMode, None),
+            KeyBinding::new("f", ToggleFullscreen, None),
+            KeyBinding::new("shift-f", ToggleFastMode, None),
             KeyBinding::new("b", ToggleSidebar, None),
             KeyBinding::new("t", ToggleTheme, None),
             KeyBinding::new("f5", RefreshTree, None),
