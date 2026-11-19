@@ -10,6 +10,10 @@ TurboView is a Windows x64 image viewer built with Rust, GPUI and libjpeg-turbo.
 
 The package includes the TurboView application documentation and the applicable libjpeg-turbo license notices. This software is based in part on the work of the Independent JPEG Group.
 
+## Runtime requirements
+
+The Windows x64 portable build statically links the MSVC C/C++ runtime and does not require a separately installed Visual C++ Redistributable or ICU runtime. Windows system components such as DirectX and the Windows shell remain operating-system dependencies.
+
 ## Included capabilities
 
 - Fast JPEG decoding through the libjpeg-turbo SIMD path.
