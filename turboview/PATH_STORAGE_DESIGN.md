@@ -11,8 +11,9 @@ library, sibling images repeat the same directory prefix many times.
 The next candidate representation is:
 
 - a directory table: one shared path allocation per unique parent directory;
-- a contiguous UTF-16 filename arena;
-- a compact image record containing a directory id and filename range;
+- a contiguous filename-byte arena using `OsStr::as_encoded_bytes()` (on Windows this preserves the platform's lossless encoded form, including unpaired UTF-16 units);
+- a compact image record containing a directory id and filename-byte range;
+- precomputed component-aware sort keys for exact `Path::cmp` ordering without constructing `PathBuf` values in the comparator;
 - conversion to `PathBuf` only at filesystem/decode boundaries.
 
 The prototype must preserve Windows non-UTF-8 paths and the exact ordering
@@ -21,11 +22,14 @@ are not ordinary filesystem children, without silently changing their order.
 
 ## Important correctness constraints
 
-1. Do not compare concatenated UTF-16 strings as a substitute for
+1. Do not compare concatenated filename strings as a substitute for
    `PathBuf::cmp`: component ordering differs for cases such as
-   `C:\\foo\\bar.jpg` and `C:\\foo.txt`.
-2. Preserve arbitrary Windows UTF-16 names; never round-trip through
-   `to_string_lossy()`.
+   `C:\\foo\\bar.jpg` and `C:\\foo.txt`. The current implementation encodes
+   path components with tags and terminators, then compares the virtual
+   concatenation of directory and filename keys.
+2. Preserve arbitrary Windows names; never round-trip through
+   `to_string_lossy()`. The current implementation stores `OsStr` encoded bytes
+   and reconstructs with `from_encoded_bytes_unchecked` only for bytes it encoded.
 3. Treat archive virtual paths as a separate record kind until their ordering
    and refresh semantics are explicitly tested.
 4. Keep the global list sorted so `partition_point` and binary search remain
@@ -65,21 +69,31 @@ it is intended for representation comparisons, not to predict every real folder
 distribution. Record the Windows build, CPU model, RAM, storage type, and median
 of the runs alongside the output.
 
-The Windows insertion path now appends UTF-16 filename units directly into the
-arena (no temporary per-filename `Vec<u16>`). The storage estimate includes the
-directory hash table and directory string payload, but excludes allocator
-metadata/alignment; treat it as an estimate rather than RSS. A Windows-only
-test covers unpaired UTF-16 code units.
+The implementation currently appends encoded filename bytes directly into the
+arena. `PathStore::cmp` compares precomputed component-aware keys and does not
+materialize `PathBuf` values during sorting. The Windows-only round-trip test
+covers unpaired UTF-16 code units. `storage_bytes()` is an owned-heap estimate,
+not RSS: allocator metadata, alignment, fragmentation, and exact hash-table
+layout are not measured.
 
 
-## Current benchmark caveat
+## Current limitations before integration
 
-The current `PathStore::sort_ids` comparator reconstructs two owned `PathBuf`
-values per comparison to guarantee exact `Path::cmp` semantics. Its sort timing
-is therefore a deliberately conservative correctness baseline and is expected
-to be much slower than sorting borrowed `PathBuf`/`Arc<Path>` values. This is
-not an acceptable production implementation. Do not interpret the current
-prototype's sort time as the best possible compact-store performance, and do
-not integrate it into the viewer. The next optimization must provide a
-component-aware borrowed comparator with ordering-parity tests, or another
-precomputed sort-key design whose memory cost is measured honestly.
+- `PathStore` is append-only. It has no per-record removal or filename-arena
+  reclamation. A production integration must either build a fresh store for a
+  completed scan and atomically swap generations, or implement and test a
+  reclaiming strategy. Repeated refreshes must not retain deleted paths forever.
+- `pathbench`'s current PathStore index loop calls `id_at(i)`, which returns
+  the insertion ID for dense storage position. It does not exercise the sorted
+  navigation array. The benchmark must measure `ids[i]` after sorting and
+  include next/previous traversal before its navigation figures are accepted.
+- The current synthetic dataset has 4,096 shared directories and regular short
+  filenames. Add a second profile with deep paths and many unique directories.
+- The current benchmark should be run at 100K, 1M, and 10M entries where machine
+  memory permits, with repeated medians. Its estimates must not be presented as
+  process RSS.
+
+The current sort-key comparator is an optimization already present in the code;
+the remaining acceptance work is to validate it broadly, correct the navigation
+benchmark, and establish refresh-generation lifetime behavior. Keep the prototype
+isolated from `ImageViewer` until those checks pass.
