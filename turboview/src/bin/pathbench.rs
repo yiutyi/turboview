@@ -1,8 +1,9 @@
 //! Compare the three image-path representations before wiring PathStore into ImageViewer.
 //!
 //! Run on Windows with:
-//!   cargo run --release --bin pathbench -- 100000
-//!   cargo run --release --bin pathbench -- 1000000
+//!   cargo run --release --bin pathbench -- 100000 flat
+//!   cargo run --release --bin pathbench -- 100000 deep
+//!   cargo run --release --bin pathbench -- 1000000 deep
 //!
 //! This is a repeatable synthetic benchmark, not a substitute for measuring a real library.
 
@@ -52,11 +53,11 @@ fn main() {
             std::process::exit(2);
         }
     };
-    let directory_capacity = if deep { count.div_ceil(8) } else { 4096 };
     if count == 0 || count > u32::MAX as usize {
         eprintln!("entry count must be in 1..=u32::MAX");
         std::process::exit(2);
     }
+    let directory_capacity = if deep { count.div_ceil(8) } else { 4096 };
 
     println!("TurboView path storage benchmark · {count} entries");
     println!("Synthetic Windows paths · profile={profile} · estimated unique directories={directory_capacity} · deterministic order");
