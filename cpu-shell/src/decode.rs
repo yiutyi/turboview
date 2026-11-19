@@ -92,6 +92,36 @@ pub fn is_jpeg(data: &[u8], hint: Option<&str>) -> bool {
     )
 }
 
+/// Header-only read: lets the UI know whether a sharper decode is worth
+/// starting in the background without touching pixels.
+pub fn jpeg_dimensions(data: &[u8]) -> Option<(u32, u32)> {
+    if data.len() < 4 || data[0] != 0xFF || data[1] != 0xD8 {
+        return None;
+    }
+    let handle = unsafe { tj::tjInitDecompress() };
+    if handle.is_null() {
+        return None;
+    }
+    let guard = Handle(handle);
+    let _ = &guard;
+    let (mut w, mut h, mut subsamp, mut colorspace) = (0, 0, 0, 0);
+    let rc = unsafe {
+        tj::tjDecompressHeader3(
+            handle,
+            data.as_ptr(),
+            data.len() as c_ulong,
+            &mut w,
+            &mut h,
+            &mut subsamp,
+            &mut colorspace,
+        )
+    };
+    if rc != 0 || w <= 0 || h <= 0 {
+        return None;
+    }
+    Some((w as u32, h as u32))
+}
+
 /// Picks a scaled-IDCT factor that libjpeg-turbo accelerates with SIMD.
 /// 3/8, 5/8 … fall back to the C path and are slower than a full decode,
 /// so we prefer dropping a whole step.
@@ -334,6 +364,12 @@ mod tests {
         assert_eq!(bmp.rgba.len(), 64 * 64 * 4);
         // opaque alpha everywhere
         assert!(bmp.rgba.chunks_exact(4).all(|p| p[3] == 255));
+    }
+
+    #[test]
+    fn reads_jpeg_dimensions_without_decoding() {
+        assert_eq!(jpeg_dimensions(JPG64), Some((64, 64)));
+        assert_eq!(jpeg_dimensions(b"not a jpeg"), None);
     }
 
     #[test]

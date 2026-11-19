@@ -17,6 +17,17 @@ pub struct Viewer {
     pub view_rect: Rect,
     dirty: bool,
     last_area: Rect,
+    prev: Option<PrevFrame>,
+}
+
+/// Last rendered frame, used to turn a pan into a copy plus thin strips.
+struct PrevFrame {
+    rect: Rect,
+    dst: (i32, i32),
+    zoom: f32,
+    buf: Vec<u32>,
+    w: u32,
+    h: u32,
 }
 
 impl Viewer {
@@ -31,6 +42,7 @@ impl Viewer {
             view_rect: Rect::new(0, 0, 0, 0),
             dirty: true,
             last_area: Rect::new(0, 0, 0, 0),
+            prev: None,
         }
     }
 
@@ -45,7 +57,17 @@ impl Viewer {
         let img = RgbaImage::from_raw(bmp.width, bmp.height, bmp.rgba)
             .expect("decoded buffer size mismatch");
         self.img = Some(img);
+        self.prev = None;
         self.fit(area);
+    }
+
+    pub fn clear_image(&mut self) {
+        self.img = None;
+        self.prev = None;
+        self.view.clear();
+        self.view_w = 0;
+        self.view_h = 0;
+        self.dirty = true;
     }
 
     pub fn fit(&mut self, area: Rect) {
@@ -114,6 +136,10 @@ impl Viewer {
 
     /// Rebuilds the visible slice. Only the crop that lands on screen is
     /// resampled, so cost tracks the viewport size, never the image size.
+    ///
+    /// When the previous frame is known and only the offset moved (the pan
+    /// case), the overlapping area is copied and just the exposed strips are
+    /// resampled.
     pub fn rebuild(&mut self, area: Rect) {
         if !self.dirty {
             return;
@@ -139,71 +165,168 @@ impl Viewer {
             return;
         }
 
-        let sx_f = (vis.x - dst_x) as f32 / self.zoom;
-        let sy_f = (vis.y - dst_y) as f32 / self.zoom;
-        let sw_f = vis.w as f32 / self.zoom;
-        let sh_f = vis.h as f32 / self.zoom;
-        let x0 = sx_f.max(0.0);
-        let y0 = sy_f.max(0.0);
-        let x1 = (sx_f + sw_f).min(iw);
-        let y1 = (sy_f + sh_f).min(ih);
-        if x1 <= x0 || y1 <= y0 {
-            self.view.clear();
-            self.view_w = 0;
-            self.view_h = 0;
-            return;
-        }
+        // Pan fast path: same zoom, overlapping viewport, shift + fill strips.
+        // The copy is aligned by image content, not by screen position: the new
+        // local pixel u shows the old local pixel u + (vis shift) - (content shift).
+        let pan_path = self
+            .prev
+            .as_ref()
+            .filter(|p| (p.zoom - self.zoom).abs() < 1e-4)
+            .and_then(|p| {
+                let dx = dst_x - p.dst.0;
+                let dy = dst_y - p.dst.1;
+                if dx == 0 && dy == 0 {
+                    return None;
+                }
+                let u0 = 0.max(p.rect.x - vis.x + dx);
+                let u1 = vis.w.min(p.rect.x + p.w as i32 - vis.x + dx);
+                let v0 = 0.max(p.rect.y - vis.y + dy);
+                let v1 = vis.h.min(p.rect.y + p.h as i32 - vis.y + dy);
+                if u1 <= u0 || v1 <= v0 {
+                    return None;
+                }
 
-        self.view = resample(img, x0, y0, x1, y1, vis.w as u32, vis.h as u32);
+                let mut buf = vec![0u32; (vis.w * vis.h) as usize];
+                let n = (u1 - u0) as usize;
+                for v in v0..v1 {
+                    let sy = (vis.y + v - dy - p.rect.y) as usize;
+                    let sx = (vis.x + u0 - dx - p.rect.x) as usize;
+                    let si = sy * p.w as usize + sx;
+                    let di = v as usize * vis.w as usize + u0 as usize;
+                    buf[di..di + n].copy_from_slice(&p.buf[si..si + n]);
+                }
+
+                // Bands not covered by the shifted copy, in new-local coordinates.
+                let bands = [
+                    Rect::new(vis.x, vis.y, u0, vis.h),
+                    Rect::new(vis.x + u1, vis.y, vis.w - u1, vis.h),
+                    Rect::new(vis.x + u0, vis.y, u1 - u0, v0),
+                    Rect::new(vis.x + u0, vis.y + v1, u1 - u0, vis.h - v1),
+                ];
+                for band in bands {
+                    if band.is_empty() {
+                        continue;
+                    }
+                    sample_into(
+                        img,
+                        self.zoom,
+                        dst_x,
+                        dst_y,
+                        band,
+                        &mut buf,
+                        vis.w as usize,
+                        (band.x - vis.x, band.y - vis.y),
+                    );
+                }
+                Some(buf)
+            });
+
+        let buf = match pan_path {
+            Some(b) => b,
+            None => {
+                let mut buf = vec![0u32; (vis.w * vis.h) as usize];
+                sample_into(
+                    img,
+                    self.zoom,
+                    dst_x,
+                    dst_y,
+                    vis,
+                    &mut buf,
+                    vis.w as usize,
+                    (0, 0),
+                );
+                buf
+            }
+        };
+
+        self.view = buf;
         self.view_w = vis.w as u32;
         self.view_h = vis.h as u32;
         self.view_rect = vis;
+        // Kept for the next pan; a viewport-sized copy (~3 MB at 1080p).
+        self.prev = Some(PrevFrame {
+            rect: vis,
+            dst: (dst_x, dst_y),
+            zoom: self.zoom,
+            buf: self.view.clone(),
+            w: self.view_w,
+            h: self.view_h,
+        });
+    }
+
+    /// Swaps in a sharper decode while keeping the user's zoom and pan.
+    pub fn replace_image(&mut self, bmp: Bitmap) {
+        let Some(img) = RgbaImage::from_raw(bmp.width, bmp.height, bmp.rgba) else {
+            return;
+        };
+        self.img = Some(img);
+        self.prev = None;
+        self.dirty = true;
     }
 }
 
+/// Sample a screen-space region of the image into a u32 (0x00RRGGBB) buffer.
+///
+/// The mapping is evaluated per *screen* pixel, `image = (screen - dst_origin) / zoom`,
+/// never relative to the region. A viewport that only moved (same zoom, integer pan)
+/// therefore maps the same screen pixel to the same image pixel, which is exactly what
+/// makes the pan fast path bit-identical to a full rebuild.
+///
 /// Nearest when 1:1, box average when shrinking, bilinear when enlarging.
-/// Writes 0x00RRGGBB directly, so the blitter never touches channel maths.
-fn resample(img: &RgbaImage, x0: f32, y0: f32, x1: f32, y1: f32, ow: u32, oh: u32) -> Vec<u32> {
+fn sample_into(
+    img: &RgbaImage,
+    zoom: f32,
+    dst_x: i32,
+    dst_y: i32,
+    region: Rect,
+    out: &mut [u32],
+    out_w: usize,
+    origin: (i32, i32),
+) {
+    if region.w <= 0 || region.h <= 0 {
+        return;
+    }
     let raw = img.as_raw();
     let iw = img.width() as usize;
     let ih = img.height() as usize;
-    let ow = ow as usize;
-    let oh = oh as usize;
-    let sx_step = (x1 - x0) / ow as f32;
-    let sy_step = (y1 - y0) / oh as f32;
-    let mut out = Vec::with_capacity(ow * oh);
+    let ow = region.w as usize;
+    let oh = region.h as usize;
+    let step = 1.0 / zoom;
 
-    // 1:1 — straight nearest copy, no filtering at all.
-    if (sx_step - 1.0).abs() <= 0.02 && (sy_step - 1.0).abs() <= 0.02 {
+    if (step - 1.0).abs() <= 0.02 {
+        // 1:1 — straight nearest copy, no filtering at all.
         for oy in 0..oh {
-            let sy = ((y0 + oy as f32 * sy_step).round() as usize).min(ih - 1);
+            let fy = (region.y + oy as i32 - dst_y) as f32 * step;
+            let sy = (fy.round() as i32).clamp(0, ih as i32 - 1) as usize;
             let row = sy * iw;
+            let drow = (origin.1 + oy as i32) as usize * out_w;
             for ox in 0..ow {
-                let sx = ((x0 + ox as f32 * sx_step).round() as usize).min(iw - 1);
+                let fx = (region.x + ox as i32 - dst_x) as f32 * step;
+                let sx = (fx.round() as i32).clamp(0, iw as i32 - 1) as usize;
                 let i = (row + sx) * 4;
-                out.push(((raw[i] as u32) << 16) | ((raw[i + 1] as u32) << 8) | raw[i + 2] as u32);
+                out[drow + (origin.0 + ox as i32) as usize] =
+                    ((raw[i] as u32) << 16) | ((raw[i + 1] as u32) << 8) | raw[i + 2] as u32;
             }
         }
-        return out;
+        return;
     }
 
-    if sx_step >= 1.5 || sy_step >= 1.5 {
+    if step >= 1.5 {
         // Downscale: average the source footprint of each output pixel.
         // Column ranges are computed once, not per row.
         let mut cols: Vec<(usize, usize)> = Vec::with_capacity(ow);
         for ox in 0..ow {
-            let s0 = (x0 + ox as f32 * sx_step).floor().max(0.0) as usize;
-            let s1 = ((x0 + (ox + 1) as f32 * sx_step).ceil() as usize)
-                .min(iw)
-                .max(s0 + 1);
+            let fx = (region.x + ox as i32 - dst_x) as f32 * step;
+            let s0 = fx.floor().max(0.0) as usize;
+            let s1 = ((fx + step).ceil() as usize).min(iw).max(s0 + 1);
             cols.push((s0, s1));
         }
         for oy in 0..oh {
-            let sy0 = (y0 + oy as f32 * sy_step).floor().max(0.0) as usize;
-            let sy1 = ((y0 + (oy + 1) as f32 * sy_step).ceil() as usize)
-                .min(ih)
-                .max(sy0 + 1);
-            for &(sx0, sx1) in &cols {
+            let fy = (region.y + oy as i32 - dst_y) as f32 * step;
+            let sy0 = fy.floor().max(0.0) as usize;
+            let sy1 = ((fy + step).ceil() as usize).min(ih).max(sy0 + 1);
+            let drow = (origin.1 + oy as i32) as usize * out_w;
+            for (ox, &(sx0, sx1)) in cols.iter().enumerate() {
                 let (mut r, mut g, mut b, mut n) = (0u32, 0u32, 0u32, 0u32);
                 for y in sy0..sy1 {
                     let row = y * iw;
@@ -216,21 +339,22 @@ fn resample(img: &RgbaImage, x0: f32, y0: f32, x1: f32, y1: f32, ow: u32, oh: u3
                     }
                 }
                 let n = n.max(1);
-                out.push(((r / n) << 16) | ((g / n) << 8) | (b / n));
+                out[drow + (origin.0 + ox as i32) as usize] =
+                    ((r / n) << 16) | ((g / n) << 8) | (b / n);
             }
         }
     } else {
         // Magnify: integer bilinear with precomputed column weights.
         let mut cols: Vec<(usize, usize, u32)> = Vec::with_capacity(ow);
         for ox in 0..ow {
-            let fx = (x0 + (ox as f32 + 0.5) * sx_step - 0.5).clamp(0.0, iw as f32 - 1.0);
+            let fx = ((region.x + ox as i32 - dst_x) as f32 * step).clamp(0.0, iw as f32 - 1.0);
             let x = fx.floor() as usize;
             let x2 = (x + 1).min(iw - 1);
             let w = ((fx - x as f32) * 256.0) as u32;
             cols.push((x, x2, w.min(256)));
         }
         for oy in 0..oh {
-            let fy = (y0 + (oy as f32 + 0.5) * sy_step - 0.5).clamp(0.0, ih as f32 - 1.0);
+            let fy = ((region.y + oy as i32 - dst_y) as f32 * step).clamp(0.0, ih as f32 - 1.0);
             let y = fy.floor() as usize;
             let y2 = (y + 1).min(ih - 1);
             let wy = ((fy - y as f32) * 256.0) as u32;
@@ -238,7 +362,8 @@ fn resample(img: &RgbaImage, x0: f32, y0: f32, x1: f32, y1: f32, ow: u32, oh: u3
             let wy0 = 256 - wy1;
             let row0 = y * iw * 4;
             let row1 = y2 * iw * 4;
-            for &(x, x2, wx1) in &cols {
+            let drow = (origin.1 + oy as i32) as usize * out_w;
+            for (ox, &(x, x2, wx1)) in cols.iter().enumerate() {
                 let wx0 = 256 - wx1;
                 let mut px = 0u32;
                 for c in 0..3 {
@@ -249,11 +374,10 @@ fn resample(img: &RgbaImage, x0: f32, y0: f32, x1: f32, y1: f32, ow: u32, oh: u3
                     let v = ((top >> 8) * wy0 + (bot >> 8) * wy1) >> 8;
                     px |= v.min(255) << (16 - c * 8);
                 }
-                out.push(px);
+                out[drow + (origin.0 + ox as i32) as usize] = px;
             }
         }
     }
-    out
 }
 
 #[cfg(test)]
@@ -317,8 +441,39 @@ mod tests {
             ],
         )
         .unwrap();
-        let out = resample(&img, 0.0, 0.0, 2.0, 2.0, 2, 2);
+        let mut out = vec![0u32; 4];
+        sample_into(&img, 1.0, 0, 0, Rect::new(0, 0, 2, 2), &mut out, 2, (0, 0));
         assert_eq!(out, vec![0xFF0000, 0x00FF00, 0x0000FF, 0xFFFF00]);
+    }
+
+    #[test]
+    fn pan_fast_path_matches_full_rebuild() {
+        let mut rgba = Vec::with_capacity(400 * 300 * 4);
+        for y in 0..300u32 {
+            for x in 0..400u32 {
+                rgba.extend_from_slice(&[(x % 256) as u8, (y % 256) as u8, ((x + y) % 256) as u8, 255]);
+            }
+        }
+        let mut v = Viewer::new();
+        v.set_image(
+            Bitmap {
+                width: 400,
+                height: 300,
+                rgba,
+            },
+            Rect::new(0, 0, 800, 600),
+        );
+        v.rebuild(Rect::new(0, 0, 800, 600));
+
+        v.pan(37.0, 21.0);
+        v.rebuild(Rect::new(0, 0, 800, 600));
+        let shifted = v.view.clone();
+
+        // Force the generic path from the same state.
+        v.prev = None;
+        v.dirty = true;
+        v.rebuild(Rect::new(0, 0, 800, 600));
+        assert_eq!(v.view, shifted, "pan fast path diverged from full rebuild");
     }
 
     #[test]

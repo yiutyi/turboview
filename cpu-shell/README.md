@@ -2,7 +2,7 @@
 
 不依赖 GPU、不依赖 GPUI 的看图器外壳：一份代码，Windows（GDI/DXGI blit）、macOS（CoreGraphics）、Linux（X11/Wayland shm）共用同一套 CPU 合成路径。
 
-当前进度：**第二阶段完成（Linux 实测通过）** —— libjpeg-turbo 真实解码已接入，平台抽象层就位，缩放/平移/翻页/全屏/ZIP 浏览可用。
+当前进度：**第三阶段完成（性能改造 + Windows 真机验证）** —— 两级解码（视口首帧 + 后台高清替换）、平移快路径（移位拷贝 + 只重采样露出的条带）、Windows DPI 状态栏修正均已落地。
 
 ![fit](docs/real-fit.png)
 
@@ -12,6 +12,8 @@
 
 | 输入 | 输出 | 耗时 |
 |---|---|---|
+| 4000×3000 JPEG（首帧，按视口 1000 px 走 1/4 IDCT） | 1000×750 | **20 ms** |
+| 同图后台高清替换（上限 4096） | 4000×3000 | 60–75 ms（首帧已上屏，不阻塞） |
 | 4000×3000 JPEG（复杂内容） | 2000×1500 | **73 ms** |
 | 4000×3000 JPEG（低熵内容） | 2000×1500 | 34 ms |
 | 1920×1080 JPEG | 1920×1080 | 23–27 ms |
@@ -22,14 +24,16 @@
 
 | 操作 | 耗时 |
 |---|---|
-| 整窗合成（背景 + 图片 + 侧栏 + 状态栏） | **0.38 ms** |
-| 合成 + 提交（softbuffer → X11 shm） | **1.47 ms** |
-| 重建视口 @100%（1:1 直拷） | 4.1 ms |
-| 重建视口 @200%（双线性放大） | 5.2 ms |
-| 拖拽平移一帧 @200% | 5.3 ms |
-| 打开 12 MP 照片到首帧上屏 | 约 85 ms（解码 75 + 首绘 9） |
+| 整窗合成（背景 + 图片 + 侧栏 + 状态栏） | **0.31 ms** |
+| 合成 + 提交（softbuffer → X11 shm） | **1.05 ms** |
+| 重建视口 + 合成 @100%（1:1 直拷） | **2.93 ms** |
+| 重建视口 @200%（双线性放大） | 7.9 ms |
+| 重建视口 @400% | 5.5 ms |
+| **拖拽平移一帧 @400%（快路径）** | **1.98 ms** |
+| 1:1 → fit 往返 | 4.1 / 4.8 ms |
+| 打开 12 MP 照片到首帧上屏 | **约 33 ms**（首帧解码 20 + 首绘 12，高清后台补） |
 
-> 老笔记本按 2–4 倍折算：静态看图仍是一帧内完成；平移/缩放每帧 10–20 ms，可用。
+> 平移走「上一帧移位拷贝 + 只重采样露出的四条边」，比重建整幅快 2–3 倍；旧机器按 2–4 倍折算仍然是 60 fps 以内的交互手感。
 
 ## 结构
 
@@ -92,16 +96,32 @@ cmake -S . -B build-turbo-linux -DCMAKE_BUILD_TYPE=Release \
       -DWITH_TOOLS=OFF -DWITH_TESTS=OFF -DWITH_JAVA=OFF -DWITH_FUZZ=OFF
 cmake --build build-turbo-linux --target turbojpeg-static -j
 
-# Windows（MSVC）
-cmake -S . -B build-turbo -G "Visual Studio 17 2022" -A x64 -DWITH_SIMD=ON -DWITH_TURBOJPEG=ON ...
-cmake --build build-turbo --config Release --target turbojpeg-static
-
+# Windows（MSVC + Ninja，与仓库 CI 相同参数）
+cmake -G Ninja -S . -B build-turbo -DCMAKE_BUILD_TYPE=Release `
+      -DWITH_SIMD=ON -DWITH_TURBOJPEG=ON -DENABLE_SHARED=OFF -DENABLE_STATIC=ON `
+      -DWITH_CRT_DLL=ON -DWITH_TOOLS=OFF -DWITH_TESTS=OFF -DWITH_JAVA=OFF -DWITH_FUZZ=OFF
+cmake --build build-turbo --target turbojpeg-static
 cd cpu-shell && cargo build --release
+
+# Windows（从 Linux 交叉编译，仅用于编译校验，无 SIMD）
+cmake -S . -B build-turbo-mingw -DCMAKE_SYSTEM_NAME=Windows `
+      -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc -DWITH_SIMD=OFF ...
+cargo build --release --target x86_64-pc-windows-gnu
 ```
 
-`build.rs` 按目标平台选择 `build-turbo/turbojpeg-static.lib` 或 `build-turbo-linux/libturbojpeg.a`。
+`build.rs` 按目标选择 `build-turbo/turbojpeg-static.lib`（MSVC）、`build-turbo-mingw/libturbojpeg.a`（mingw）或 `build-turbo-linux/libturbojpeg.a`（Linux）。
 
 Linux 系统依赖：`libx11-dev libx11-xcb-dev`（winit/softbuffer 后端）。
+
+## 平台状态
+
+| 平台 | 编译 | 运行验证 |
+|---|---|---|
+| Linux | ✅ | ✅ 截图 + 基准 + **17 项单测**（含平移快路径像素一致性） |
+| Windows 10（19045，真机）/ 11 | ✅ 交叉编译通过（PE32+ GUI，6.3 MB） | ✅ 真机跑通：首帧 / fit / 4× / 平移 / 1:1 / 翻页 / ZIP 全流程截图 |
+| macOS | 未验证 | 未验证 |
+
+Windows 构建产物为 GUI 子系统（`windows_subsystem = "windows"`，release），双击不弹控制台；`TV_DEMO` 等调试输出需在终端里启动才会显示。
 
 ## 测试钩子
 
@@ -115,7 +135,7 @@ TV_OPEN=photo.jpg TV_DEMO=1 TV_BENCH=1 TV_DUMP_DIR=/tmp/dump \
 
 ## 下一步
 
-1. Windows 侧验证：链接 `turbojpeg-static.lib`、`explorer /select`、GDI 呈现、DPI 缩放；
+1. GitHub Actions `windows-latest` 跑通（编译 + 15 项单测 + 无头窗口冒烟）；
 2. macOS 侧验证：`open -R`、Retina 2×；
 3. 侧栏从平铺列表升级为目录树（复用 `dirtree.rs` 模型），加缩略图与预取；
 4. 7z/rar 支持（原 `archive.rs` 已有实现）；
@@ -124,5 +144,5 @@ TV_OPEN=photo.jpg TV_DEMO=1 TV_BENCH=1 TV_DUMP_DIR=/tmp/dump \
 ## 已知取舍
 
 - 无输入法、无无障碍、无多窗口——看图场景有意省略；
-- 图片区改为整块重绘（不再做「只补边缘」），因为重采样本身已是 4–5 ms，局部补绘收益小于复杂度；
+- 图片区整块重绘 + 平移走快路径：只有缩放/换图才重采样整幅，纯平移时只补边缘条带（快路径与整幅重采样有单测保证像素一致）；
 - 高 DPI 下按 scale factor 放大布局，Retina 像素量 4 倍，整窗合成仍在 1.5 ms 量级。

@@ -45,9 +45,14 @@ const FONT_BYTES: &[u8] = include_bytes!("../assets/NotoSansSC-subset.ttf");
 const SIDEBAR_W: i32 = 280;
 const STATUS_H: i32 = 26;
 
-#[derive(Debug)]
 enum UserEvent {
     Exit,
+    /// A sharper background decode finished.
+    ImageReady {
+        generation: u64,
+        bitmap: decode::Bitmap,
+        ms: f64,
+    },
 }
 
 enum Source {
@@ -176,6 +181,12 @@ struct App {
     fullscreen: bool,
     last_decode_ms: f64,
     last_rebuild_ms: f64,
+
+    proxy: Option<winit::event_loop::EventLoopProxy<UserEvent>>,
+    generation: u64,
+    quick_ms: f64,
+    sharp_ms: f64,
+    sharp: bool,
 }
 
 impl App {
@@ -211,6 +222,11 @@ impl App {
             fullscreen: false,
             last_decode_ms: 0.0,
             last_rebuild_ms: 0.0,
+            proxy: None,
+            generation: 0,
+            quick_ms: 0.0,
+            sharp_ms: 0.0,
+            sharp: false,
         })
     }
 
@@ -262,8 +278,8 @@ impl App {
         if self.source.len() == 0 {
             return;
         }
-        let t0 = Instant::now();
-        let max_dim = self.decode_max_dim();
+        self.generation += 1;
+        let generation = self.generation;
         let bytes = match self.source.read_bytes() {
             Ok(b) => b,
             Err(e) => {
@@ -272,9 +288,17 @@ impl App {
             }
         };
         let ext = self.source.ext();
-        match decode::decode_bytes(&bytes, Some(&ext), max_dim, false) {
+
+        // Stage 1: decode only as large as the viewport. This is what the
+        // user sees first, and it is cheap even for a 100 MP scan.
+        let quick_max = self.quick_max_dim();
+        let t0 = Instant::now();
+        match decode::decode_bytes(&bytes, Some(&ext), quick_max, false) {
             Ok(bmp) => {
-                self.last_decode_ms = t0.elapsed().as_secs_f64() * 1000.0;
+                self.quick_ms = t0.elapsed().as_secs_f64() * 1000.0;
+                self.last_decode_ms = self.quick_ms;
+                self.sharp = false;
+                self.sharp_ms = 0.0;
                 let (w, h) = (bmp.width, bmp.height);
                 self.viewer.set_image(bmp, self.area());
                 self.refresh_meta();
@@ -293,6 +317,29 @@ impl App {
                     w.set_title(&format!("{name} — TurboView CPU"));
                     w.request_redraw();
                 }
+
+                // Stage 2: sharpen in the background when the source is
+                // actually bigger than what we just decoded.
+                if let Some((ow, oh)) = decode::jpeg_dimensions(&bytes) {
+                    if ow.max(oh) > w.max(h) + 8 {
+                        if let Some(proxy) = self.proxy.clone() {
+                            let thread_bytes = bytes.clone();
+                            let thread_ext = ext.clone();
+                            std::thread::spawn(move || {
+                                let t = Instant::now();
+                                if let Ok(full) =
+                                    decode::decode_bytes(&thread_bytes, Some(&thread_ext), 4096, false)
+                                {
+                                    let _ = proxy.send_event(UserEvent::ImageReady {
+                                        generation,
+                                        bitmap: full,
+                                        ms: t.elapsed().as_secs_f64() * 1000.0,
+                                    });
+                                }
+                            });
+                        }
+                    }
+                }
             }
             Err(e) => {
                 self.status_right = format!("解码失败: {e:#}");
@@ -303,6 +350,13 @@ impl App {
         }
     }
 
+    fn quick_max_dim(&self) -> u32 {
+        let area = self.area();
+        let longest = area.w.max(area.h).max(64) as u32;
+        longest.clamp(512, 4096)
+    }
+
+    #[allow(dead_code)]
     fn decode_max_dim(&self) -> u32 {
         let area = self.area();
         let longest = area.w.max(area.h).max(64) as u32;
@@ -320,7 +374,16 @@ impl App {
             self.source.len(),
             self.viewer.zoom_pct()
         );
-        self.status_right = format!("CPU 渲染 · 解码 {:.1} ms", self.last_decode_ms);
+        self.status_right = if self.sharp {
+            format!(
+                "CPU · 首帧 {:.0} ms · 高清 {:.0} ms",
+                self.quick_ms, self.sharp_ms
+            )
+        } else if self.quick_ms > 0.0 {
+            format!("CPU · 首帧 {:.0} ms", self.quick_ms)
+        } else {
+            "CPU · 无 GPU".into()
+        };
         // Status bar text changed, so the chrome has to be redrawn too.
         self.dirty = Some(Rect::new(0, 0, self.layout.width, self.layout.height));
     }
@@ -381,6 +444,10 @@ impl App {
         self.canvas.resize(size.width as usize, size.height as usize);
         self.viewer.invalidate(self.area());
         self.viewer.fit(self.area());
+        // Fit changes with the viewport, so the zoom percentage must be
+        // refreshed here too (otherwise the status bar keeps a stale value
+        // after Windows applies its DPI-driven resize).
+        self.refresh_meta();
         self.dirty = Some(Rect::new(0, 0, self.layout.width, self.layout.height));
     }
 
@@ -625,6 +692,31 @@ impl ApplicationHandler<UserEvent> for App {
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
             UserEvent::Exit => event_loop.exit(),
+            UserEvent::ImageReady {
+                generation,
+                bitmap,
+                ms,
+            } => {
+                if generation != self.generation {
+                    return; // a newer image was opened while decoding
+                }
+                let (w, h) = (bitmap.width, bitmap.height);
+                self.viewer.replace_image(bitmap);
+                self.sharp = true;
+                self.sharp_ms = ms;
+                self.refresh_meta();
+                self.status_mid = format!(
+                    "{} × {}   ·   {} / {}   ·   {}%",
+                    w,
+                    h,
+                    self.source.index() + 1,
+                    self.source.len(),
+                    self.viewer.zoom_pct()
+                );
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
+            }
         }
     }
 
@@ -805,6 +897,7 @@ fn main() -> Result<()> {
     }
 
     let mut app = App::new()?;
+    app.proxy = Some(event_loop.create_proxy());
     if let Some(path) = std::env::args().nth(1) {
         app.pending_open = Some(path);
     }

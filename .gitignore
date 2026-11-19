@@ -7,6 +7,7 @@ turboview/samples/
 # 本地构建/分发产物
 build-turbo/
 build-turbo-linux/
+build-turbo-mingw/
 cpu-shell/target/
 turboview.exe
 libjpeg-turbo-3.2.0.tar.gz

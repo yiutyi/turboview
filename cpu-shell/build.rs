@@ -8,10 +8,16 @@ fn main() {
         .parent()
         .expect("cpu-shell must live inside the libjpeg-turbo checkout");
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    let target_env = std::env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
 
     // Ninja (single-config) puts the lib directly in the build dir; the
     // Visual Studio generator puts it in Release/ or Debug/.
-    let candidates: Vec<&str> = if target_os == "windows" {
+    let candidates: Vec<&str> = if target_os == "windows" && target_env == "gnu" {
+        vec![
+            "build-turbo-mingw/libturbojpeg.a",
+            "build-turbo-mingw/Release/libturbojpeg.a",
+        ]
+    } else if target_os == "windows" {
         vec![
             "build-turbo/turbojpeg-static.lib",
             "build-turbo/Release/turbojpeg-static.lib",
@@ -44,7 +50,8 @@ fn main() {
     };
 
     println!("cargo:rustc-link-search=native={}", lib.parent().unwrap().display());
-    let stem = if target_os == "windows" { "turbojpeg-static" } else { "turbojpeg" };
+    let msvc = target_os == "windows" && target_env != "gnu";
+    let stem = if msvc { "turbojpeg-static" } else { "turbojpeg" };
     println!("cargo:rustc-link-lib=static={stem}");
     if target_os != "windows" {
         println!("cargo:rustc-link-lib=dylib=m");
