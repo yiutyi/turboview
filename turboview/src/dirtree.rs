@@ -180,17 +180,17 @@ impl DirTree {
     /// `images` 必须是**全量且已排序**的列表（即 ImageViewer::images）：
     /// 排序后第一个落在某子树内的路径就是该子树的最小路径，与增量维护的
     /// 语义一致。文件增删后旧的 first_image 可能已失效，用它一次性修正。
-    pub fn recompute_first_from(&mut self, id: usize, images: &[PathBuf]) {
+    pub fn recompute_first_from(&mut self, id: usize, images: &[Arc<Path>]) {
         let mut cur = Some(id);
         while let Some(c) = cur {
             let path = self.nodes[c].path.clone();
             // images 全量有序：二分定位到前缀起点后顺序扫描，命中即停。
             // 原实现对每个祖先线性 find，几十万张图 × 深度 = 百万级 starts_with。
-            let start = images.partition_point(|p| p.as_path() < path.as_ref());
+            let start = images.partition_point(|p| p.as_ref() < path.as_ref());
             self.nodes[c].first_image = images[start..]
                 .iter()
                 .find(|p| p.starts_with(&path))
-                .map(|p| Arc::from(p.as_path().to_path_buf()));
+                .map(|p| Arc::from((*p).as_ref().to_path_buf()));
             cur = self.nodes[c].parent;
         }
         self.dirty = true;
