@@ -2,7 +2,7 @@ name: Windows Rust CI
 
 on:
   push:
-    branches: [main, "perf/**"]
+    branches: [main, "perf/**", "next/**"]
   pull_request:
     branches: [main]
     paths:
@@ -64,6 +64,9 @@ jobs:
         working-directory: .
         run: cmake --build build-turbo --config Release --target turbojpeg-static --parallel 4
 
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
       - name: Compile experimental WIC decoder
         run: cargo check --features wic-decode --locked
 
@@ -92,7 +95,7 @@ jobs:
           Run turboview.exe directly. No Rust or Cargo installation is required.
           Keep the executable and the accompanying license/readme files together.
 
-          This package is built from the main branch commit selected by this workflow.
+          This package is built from the Git commit associated with this workflow run.
           Windows system graphics components and a compatible Microsoft Visual C++
           runtime may still be provided by Windows or need to be installed separately.
           '@ | Set-Content -Encoding UTF8 (Join-Path $dist "PORTABLE-README.txt")
