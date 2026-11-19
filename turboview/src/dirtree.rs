@@ -105,7 +105,7 @@ impl DirTree {
             expanded: false,
             depth,
         });
-        self.by_path.insert(Arc::from(path.to_path_buf()), id);
+        self.by_path.insert(self.nodes[id].path.clone(), id);
         if let Some(p) = parent_id {
             let key = &self.nodes[id].name_lower;
             let pos = self.nodes[p]
