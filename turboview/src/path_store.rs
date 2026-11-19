@@ -244,8 +244,8 @@ mod tests {
     #[test]
     fn dense_index_returns_stable_ids_without_path_materialization() {
         let mut store = PathStore::new();
-        let first = store.insert(Path::new(r"D:\\a\\one.jpg"));
-        let second = store.insert(Path::new(r"D:\\a\\two.jpg"));
+        let first = store.insert(Path::new(r"D:\a\one.jpg"));
+        let second = store.insert(Path::new(r"D:\a\two.jpg"));
         assert_eq!(store.id_at(0), Some(first));
         assert_eq!(store.id_at(1), Some(second));
         assert_eq!(store.id_at(2), None);
