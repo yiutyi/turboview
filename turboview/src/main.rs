@@ -1246,9 +1246,9 @@ impl ImageViewer {
             if archive::is_archive(&path) {
                 continue;
             }
-            let cached = self.cache.iter().any(|(p, _)| p == path.as_ref());
-            if !cached && !self.in_flight.contains(path.as_ref()) {
-                self.spawn_load(path.as_ref().clone(), false, cx);
+            let cached = self.cache.iter().any(|(p, _)| p == &path);
+            if !cached && !self.in_flight.contains(&path) {
+                self.spawn_load(path, false, cx);
             }
         }
     }
