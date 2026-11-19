@@ -149,8 +149,14 @@ impl PathIndexManager {
         name_bytes_capacity: usize,
         directories_capacity: usize,
     ) -> GenerationBuilder {
-        let id = self.next_generation.fetch_add(1, Ordering::Relaxed);
-        self.latest_requested.store(id, Ordering::Release);
+        // Serialize scan-start and publish decisions so an older concurrent
+        // begin call cannot overwrite a newer request or race the active swap.
+        let id = {
+            let _active = self.active.write().expect("path index lock poisoned");
+            let id = self.next_generation.fetch_add(1, Ordering::Relaxed);
+            self.latest_requested.store(id, Ordering::Release);
+            id
+        };
         GenerationBuilder {
             id: GenerationId(id),
             store: PathStore::with_capacity(
@@ -221,14 +227,14 @@ mod tests {
         assert!(manager.snapshot().is_none());
 
         let mut build = manager.begin_generation(2, 64, 1);
-        add(&mut build, r"C:\\photos\\a.jpg");
-        add(&mut build, r"C:\\photos\\b.jpg");
+        add(&mut build, r"C:\photos\a.jpg");
+        add(&mut build, r"C:\photos\b.jpg");
         let snapshot = manager.publish(build).unwrap();
 
         assert_eq!(snapshot.len(), 2);
-        assert_eq!(snapshot.path_at(0), Some(PathBuf::from(r"C:\\photos\\a.jpg")));
+        assert_eq!(snapshot.path_at(0), Some(PathBuf::from(r"C:\photos\a.jpg")));
         let handle = snapshot.handle_at(1).unwrap();
-        assert_eq!(snapshot.get(handle), Some(PathBuf::from(r"C:\\photos\\b.jpg")));
+        assert_eq!(snapshot.get(handle), Some(PathBuf::from(r"C:\photos\b.jpg")));
         assert_eq!(manager.snapshot().unwrap().id(), snapshot.id());
     }
 
@@ -236,46 +242,49 @@ mod tests {
     fn rejects_handle_from_another_generation() {
         let manager = PathIndexManager::new();
         let mut first = manager.begin_generation(1, 32, 1);
-        add(&mut first, r"C:\\old\\a.jpg");
+        add(&mut first, r"C:\old\a.jpg");
         let old = manager.publish(first).unwrap();
         let old_handle = old.handle_at(0).unwrap();
 
         let mut second = manager.begin_generation(1, 32, 1);
-        add(&mut second, r"D:\\new\\b.jpg");
+        add(&mut second, r"D:\new\b.jpg");
         let new = manager.publish(second).unwrap();
 
         assert_ne!(old.id(), new.id());
         assert!(new.get(old_handle).is_none());
-        assert_eq!(old.get(old_handle), Some(PathBuf::from(r"C:\\old\\a.jpg")));
+        assert_eq!(old.get(old_handle), Some(PathBuf::from(r"C:\old\a.jpg")));
     }
 
     #[test]
     fn slower_older_scan_cannot_overwrite_newer_scan() {
         let manager = PathIndexManager::new();
         let mut slow = manager.begin_generation(1, 32, 1);
-        add(&mut slow, r"C:\\slow\\a.jpg");
+        add(&mut slow, r"C:\slow\a.jpg");
         let mut fast = manager.begin_generation(1, 32, 1);
-        add(&mut fast, r"C:\\fast\\b.jpg");
+        add(&mut fast, r"C:\fast\b.jpg");
 
-        let error = manager.publish(slow).unwrap_err();
+        let error = match manager.publish(slow) {
+            Err(error) => error,
+            Ok(_) => panic!("older generation must not publish"),
+        };
         assert_eq!(error.attempted, GenerationId(1));
         assert_eq!(error.latest, GenerationId(2));
 
         let active = manager.publish(fast).unwrap();
         assert_eq!(active.id(), GenerationId(2));
-        assert_eq!(active.path_at(0), Some(PathBuf::from(r"C:\\fast\\b.jpg")));
+        assert_eq!(active.path_at(0), Some(PathBuf::from(r"C:\fast\b.jpg")));
     }
 
     #[test]
     fn old_generation_is_reclaimed_after_last_snapshot_drops() {
         let manager = PathIndexManager::new();
         let mut first = manager.begin_generation(1, 32, 1);
-        add(&mut first, r"C:\\old\\a.jpg");
+        add(&mut first, r"C:\old\a.jpg");
         let old_snapshot = manager.publish(first).unwrap();
         let weak = Arc::downgrade(&old_snapshot.inner);
 
         let mut second = manager.begin_generation(1, 32, 1);
-        add(&mut second, r"C:\\new\\b.jpg");
+        add(&mut second, r"C:\new\b.jpg");
         let _new_snapshot = manager.publish(second).unwrap();
 
         // The caller's snapshot intentionally keeps the old immutable index alive.
