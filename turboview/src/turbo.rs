@@ -411,15 +411,15 @@ fn last_error(handle: *mut c_void) -> String {
 /// PNG 快速解码：libdeflate inflate + 自研 unfilter + 直出 BGRA。
 /// 比 image crate（miniz_oxide 纯软件解压 + 中间格式转换）快数倍。
 /// 返回 None 表示该 PNG 变体不受支持（16 位/调色板/隔行等），调用方回退 image crate。
-pub fn decode_png_fast(path: &Path) -> Option<DecodedImage> {
+pub fn decode_png_fast(path: &Path, max_dim: u32) -> Option<DecodedImage> {
     let start = Instant::now();
     let data = std::fs::read(path).ok()?;
     let read_ms = start.elapsed().as_secs_f64() * 1000.0;
-    decode_png_fast_bytes(&data, read_ms)
+    decode_png_fast_bytes(&data, read_ms, max_dim)
 }
 
 /// 内存版 PNG 快速解码（压缩包条目走这里，零临时文件）。
-pub fn decode_png_fast_bytes(data: &[u8], read_ms: f64) -> Option<DecodedImage> {
+pub fn decode_png_fast_bytes(data: &[u8], read_ms: f64, max_dim: u32) -> Option<DecodedImage> {
     let decode_start = Instant::now();
     if data.len() < 58 || &data[..8] != [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A] {
         return None;
@@ -460,6 +460,11 @@ pub fn decode_png_fast_bytes(data: &[u8], read_ms: f64) -> Option<DecodedImage> 
     if width == 0 || height == 0 || interlace != 0 || idat.is_empty() {
         return None;
     }
+    // 快速通道只处理无需缩放的图片。超出显示尺寸时交给通用解码器，
+    // 避免先分配整张 BGRA 输出，再在 UI 路径中缩小；通用路径会限制最终纹理尺寸。
+    if width.max(height) > max_dim.max(1) {
+        return None;
+    }
     // 只做 8 位 RGBA / RGB / 灰度的快速通道，其余回退
     let bpp: usize = match (bit_depth, color_type) {
         (8, 6) => 4,
@@ -467,8 +472,8 @@ pub fn decode_png_fast_bytes(data: &[u8], read_ms: f64) -> Option<DecodedImage> 
         (8, 0) => 1,
         _ => return None,
     };
-    let stride = width as usize * bpp;
-    let raw_len = height as usize * (stride + 1);
+    let stride = (width as usize).checked_mul(bpp)?;
+    let raw_len = (height as usize).checked_mul(stride.checked_add(1)?)?;
     if raw_len > (1usize << 31) {
         return None;
     }
@@ -537,7 +542,8 @@ pub fn decode_png_fast_bytes(data: &[u8], read_ms: f64) -> Option<DecodedImage> 
 
     // ---- 解包为 BGRA（GPUI 帧缓冲字节序）----
     let w = width as usize;
-    let mut pixels = vec![0u8; w * height as usize * 4];
+    let pixels_len = w.checked_mul(height as usize)?.checked_mul(4)?;
+    let mut pixels = vec![0u8; pixels_len];
     for y in 0..height as usize {
         let src = &raw[y * (stride + 1) + 1..];
         let dst = &mut pixels[y * w * 4..][..w * 4];
@@ -1056,4 +1062,36 @@ pub fn decode_jpeg_roi(
         decode_ms: decode_start.elapsed().as_secs_f64() * 1000.0,
         fast,
     })
+}
+
+
+#[cfg(test)]
+mod png_decode_limit_tests {
+    use super::decode_png_fast_bytes;
+
+    fn png_header(width: u32, height: u32) -> Vec<u8> {
+        // Minimal structurally valid PNG chunks. The IDAT payload is intentionally
+        // not a valid zlib stream: an oversized image must be rejected before inflate.
+        let mut data = b"\x89PNG\r\n\x1a\n".to_vec();
+        data.extend_from_slice(&13u32.to_be_bytes());
+        data.extend_from_slice(b"IHDR");
+        data.extend_from_slice(&width.to_be_bytes());
+        data.extend_from_slice(&height.to_be_bytes());
+        data.extend_from_slice(&[8, 6, 0, 0, 0]);
+        data.extend_from_slice(&[0, 0, 0, 0]); // IHDR CRC (not validated here)
+        data.extend_from_slice(&1u32.to_be_bytes());
+        data.extend_from_slice(b"IDAT");
+        data.push(0);
+        data.extend_from_slice(&[0, 0, 0, 0]); // IDAT CRC
+        data.extend_from_slice(&0u32.to_be_bytes());
+        data.extend_from_slice(b"IEND");
+        data.extend_from_slice(&[0, 0, 0, 0]); // IEND CRC
+        data
+    }
+
+    #[test]
+    fn oversized_png_bypasses_full_size_fast_output() {
+        let png = png_header(8192, 6000);
+        assert!(decode_png_fast_bytes(&png, 0.0, 4096).is_none());
+    }
 }

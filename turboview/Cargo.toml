@@ -4,6 +4,12 @@ version = "0.1.0"
 edition = "2024"
 description = "TurboView - 史上最快图片浏览器 (Rust + GPUI + libjpeg-turbo SIMD)"
 
+[features]
+default = []
+# Experimental Windows Imaging Component (WIC) decoder with native scaling.
+# Keep disabled until parity and benchmark validation are complete.
+wic-decode = []
+
 [dependencies]
 gpui = { path = "third-party/zed/crates/gpui" }
 gpui_windows = { path = "third-party/zed/crates/gpui_windows" }
@@ -32,6 +38,14 @@ zip = { version = "9", default-features = false, features = [
 ] }
 sevenz-rust = { version = "0.6", default-features = false }
 unrar = "0.5"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.62.2", default-features = false, features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Imaging",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Com",
+] }
 
 [profile.dev]
 opt-level = 1

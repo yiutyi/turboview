@@ -55,7 +55,7 @@ fn main() {
         .unwrap_or(false)
     {
         let (avg_png, best_png, bytes) = bench("PNG 快速通道", iters, || {
-            let d = turbo::decode_png_fast(path).expect("fast png failed");
+            let d = turbo::decode_png_fast(path, u32::MAX).expect("fast png failed");
             d.pixels.len()
         });
         let (avg_img_png, _, _) = bench("PNG image crate", iters, || {
