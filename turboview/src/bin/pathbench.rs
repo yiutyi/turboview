@@ -181,12 +181,32 @@ fn main() {
         }
     }
     let full_materialize_ms = elapsed_ms(start);
-    println!("PathStore + ID     build {build:9.2} ms · sort {sort:9.2} ms · indexed {index_ms:9.2} ms · fwd+rev-id {traversal_ms:9.2} ms · sampled-get {materialize_ms:9.2} ms · full-get-fwd+rev {full_materialize_ms:9.2} ms · estimated~{:.2} MiB · dirs {}",
+
+    // Reuse one caller-owned PathBuf across the same forward/reverse walk.
+    // This isolates per-path allocation churn from the unavoidable path-byte copy.
+    let mut reusable_path = PathBuf::with_capacity(512);
+    let start = Instant::now();
+    let mut reused_checksum = 0usize;
+    for id in &ids {
+        if store.get_into(*id, &mut reusable_path) {
+            reused_checksum = reused_checksum
+                .wrapping_add(black_box(reusable_path.as_os_str().len()));
+        }
+    }
+    for id in ids.iter().rev() {
+        if store.get_into(*id, &mut reusable_path) {
+            reused_checksum = reused_checksum
+                .wrapping_add(black_box(reusable_path.as_os_str().len()));
+        }
+    }
+    let reused_materialize_ms = elapsed_ms(start);
+    println!("PathStore + ID     build {build:9.2} ms · sort {sort:9.2} ms · indexed {index_ms:9.2} ms · fwd+rev-id {traversal_ms:9.2} ms · sampled-get {materialize_ms:9.2} ms · full-get-fwd+rev {full_materialize_ms:9.2} ms · reused-get-fwd+rev {reused_materialize_ms:9.2} ms · estimated~{:.2} MiB · dirs {}",
         bytes as f64 / 1_048_576.0, store.directory_count());
     black_box(index_checksum);
     black_box(traversal_checksum);
     black_box(checksum);
     black_box(full_materialize_checksum);
+    black_box(reused_checksum);
 
     // PrefixPathStore v2: intern every directory component under its parent.
     let prefix_directory_capacity = if deep {
