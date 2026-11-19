@@ -1,7 +1,6 @@
 //! Prefix-interned path storage prototype (v2).
 use std::cmp::Ordering;
 use std::collections::HashMap;
-use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf, Prefix};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -33,8 +32,9 @@ impl PrefixPathStore {
     fn bytes(&self, id: u32) -> &[u8] { let n = self.nodes[id as usize]; &self.components[n.bytes.slice()] }
     pub fn insert(&mut self, path: &Path) -> PrefixPathId {
         let mut parent = 0u32;
+        let mut key_bytes = Vec::with_capacity(64);
         for c in path.parent().unwrap_or_else(|| Path::new("")).components() {
-            let mut key_bytes = Vec::with_capacity(32); encode_component(&mut key_bytes, c);
+            key_bytes.clear(); encode_component(&mut key_bytes, c);
             let hash = hash64(&key_bytes); let key = (parent, hash);
             let first = self.intern.get(&key).copied();
             let found = if let Some(id) = first {
