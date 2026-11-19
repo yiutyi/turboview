@@ -185,6 +185,7 @@ fn main() {
     black_box(index_checksum);
     black_box(traversal_checksum);
     black_box(checksum);
+    black_box(full_materialize_checksum);
 
     println!("\nNote: PathStore sort compares precomputed byte keys (no PathBuf materialization).");
     println!("Profiles: flat = 4,096 shallow shared directories; deep = six nested components and up to one leaf directory per eight entries.");
