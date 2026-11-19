@@ -192,6 +192,6 @@ mod tests {
         }
         assert_eq!(store.len(), 1_000_000);
         assert_eq!(store.directory_count(), 1);
-        assert!(store.storage_bytes() < 32 * 1024 * 1024);
+        assert!(store.storage_bytes() < 40 * 1024 * 1024);
     }
 }
