@@ -198,6 +198,42 @@ mod tests {
     }
 
     #[test]
+    fn ordering_matches_path_buf_for_deterministic_large_mixed_set() {
+        let mut source = Vec::new();
+        for i in 0..4096usize {
+            let dir = (i.wrapping_mul(73)) % 257;
+            let name = match i % 7 {
+                0 => format!("IMG_{i:08}.jpg"),
+                1 => format!("猫_{i:06}.png"),
+                2 => format!("a.b.{i:05}.webp"),
+                3 => format!("_{i:07}.tif"),
+                4 => format!("Z-{i:06}.bmp"),
+                5 => format!("旅行-{i:05}.gif"),
+                _ => format!("x{i:08}.jpeg"),
+            };
+            source.push(PathBuf::from(format!(r"D:\图库\{dir:03}\{name}")));
+        }
+        // Include duplicates and component-prefix edge cases.
+        source.extend([
+            PathBuf::from(r"D:\图库"),
+            PathBuf::from(r"D:\图库\000"),
+            PathBuf::from(r"D:\图库\000\a.jpg"),
+            source[17].clone(),
+            source[17].clone(),
+        ]);
+
+        let mut store = PathStore::with_capacity(source.len(), source.len() * 20, 258);
+        let ids: Vec<_> = source.iter().map(|p| store.insert(p)).collect();
+        let mut actual = ids;
+        store.sort_ids(&mut actual);
+        let mut expected = source;
+        expected.sort_unstable();
+
+        let actual_paths: Vec<_> = actual.iter().map(|id| store.get(*id).unwrap()).collect();
+        assert_eq!(actual_paths, expected);
+    }
+
+    #[test]
     fn ids_remain_stable_after_more_inserts() {
         let mut store = PathStore::new();
         let first = store.insert(Path::new(r"D:\a\one.jpg"));
