@@ -1232,7 +1232,7 @@ impl ImageViewer {
         // 用二分替代逐项线性 position：几十万张图时每次翻页少做 O(N) 全表比较。
         self.prefetch_queue.retain(|p| {
             let i = imgs.partition_point(|x| x.as_ref() < p.as_path());
-            i < imgs.len() && imgs[i] == *p && i.abs_diff(idx_now) <= 3
+            i < imgs.len() && imgs[i].as_ref() == p.as_path() && i.abs_diff(idx_now) <= 3
         });
         let deltas: &[isize] = if slow_source {
             &[1]
