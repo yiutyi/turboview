@@ -3186,7 +3186,7 @@ impl Render for ImageViewer {
                     }),
                 )
                 .child("◧")
-                .child(if self.sidebar_visible { "目录树 开" } else { "目录树 关" })
+                .child(if self.sidebar_visible { "目录树 开 · B" } else { "目录树 关 · B" })
                 .into_any_element(),
         ];
 
