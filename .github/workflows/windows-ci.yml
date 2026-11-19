@@ -95,15 +95,19 @@ jobs:
           TurboView path storage benchmark
           =================================
 
-          Open PowerShell in this tools directory and run:
-            .\pathbench.exe 100000
-            .\pathbench.exe 1000000
+          Open PowerShell in this tools directory and run all four profiles:
+            .\pathbench.exe 100000 flat
+            .\pathbench.exe 100000 deep
+            .\pathbench.exe 1000000 flat
+            .\pathbench.exe 1000000 deep
+
+          Repeat each run three times and compare medians. Optionally try
+          10000000 entries only if the machine has enough free RAM.
 
           This synthetic benchmark compares Vec<PathBuf>, Vec<Arc<Path>>,
           and PathStore + PathId. It is not a substitute for measuring a real
-          photo library. Run on the target PC and repeat each size three times.
-          Record CPU, RAM, Windows version, and whether the library is on HDD,
-          SATA SSD, NVMe, or a network share.
+          photo library. Record CPU, RAM, Windows version, and whether the
+          target library is on HDD, SATA SSD, NVMe, or a network share.
           '@ | Set-Content -Encoding UTF8 (Join-Path $tools "BENCHMARK-README.txt")
           Copy-Item (Join-Path $env:GITHUB_WORKSPACE "README.md") $dist
           Copy-Item (Join-Path $env:GITHUB_WORKSPACE "LICENSE.md") $dist
