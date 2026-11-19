@@ -212,7 +212,7 @@ mod tests {
     fn million_entry_synthetic_storage_smoke() {
         // Kept ignored in normal CI; run explicitly with
         // cargo test million_entry_synthetic_storage_smoke -- --ignored.
-        let mut store = PathStore::new();
+        let mut store = PathStore::with_capacity(1_000_000, 11_000_000, 1);
         for i in 0..1_000_000u32 {
             let name = format!(r"X:\images\{i:07}.jpg");
             store.insert(Path::new(&name));
