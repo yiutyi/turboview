@@ -57,16 +57,19 @@ material memory reduction without a meaningful navigation regression.
 Run from `turboview/` on the target Windows machine (release mode):
 
 ```powershell
-cargo run --release --bin pathbench -- 100000
-cargo run --release --bin pathbench -- 1000000
+cargo run --release --bin pathbench -- 100000 flat
+cargo run --release --bin pathbench -- 100000 deep
+cargo run --release --bin pathbench -- 1000000 flat
+cargo run --release --bin pathbench -- 1000000 deep
 ```
 
 The benchmark reports construction, sorting, sampled indexed access, forward and
 reverse sequential traversal, path materialization, and an approximate owned-heap
 estimate for `Vec<PathBuf>`, `Vec<Arc<Path>`, and `PathStore + PathId`. Run all three on the same local SSD/library and
-repeat at least three times. The synthetic dataset uses 4,096 shared directories;
-it is intended for representation comparisons, not to predict every real folder
-distribution. Record the Windows build, CPU model, RAM, storage type, and median
+repeat at least three times. The `flat` profile uses 4,096 shallow shared directories. The `deep` profile
+uses six nested directory components and up to one leaf directory per eight
+entries. Both are deterministic representation comparisons, not substitutes for
+a real library's path distribution. Record the Windows build, CPU model, RAM, storage type, and median
 of the runs alongside the output.
 
 The implementation currently appends encoded filename bytes directly into the
