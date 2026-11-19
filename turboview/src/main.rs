@@ -162,7 +162,7 @@ fn make_mono_icon(svg: &[u8], px_size: i32, rgb: u32) -> Arc<RenderImage> {
 // ============================================================================
 // 压缩包内图片的"虚拟路径"
 //
-// 压缩包场景下 images 列表仍是 Vec<PathBuf>，但每个元素是
+// 压缩包场景下 images 列表仍保留完整路径，但底层使用 Arc 共享路径分配。
 // "<压缩包路径>|<包内条目名>" 的虚拟路径。'|' 是 Windows 文件名非法字符，
 // 真实路径中绝无可能出现，因此拆分绝无歧义；
 // 缓存键、在途集合、当前图判断等全部逻辑无需改动即可复用。
@@ -666,7 +666,7 @@ impl ImageViewer {
                 let entries: Vec<PathBuf> = names.iter().map(|n| virtual_path(&path, n)).collect();
                 self.archive_expanded.insert(path.clone());
                 self.archive_counts.insert(path.clone(), names.len());
-                self.images.splice(idx + 1..idx + 1, entries);
+                self.images.splice(idx + 1..idx + 1, entries.into_iter().map(Arc::new));
                 true
             }
             Ok(_) => {
@@ -1241,7 +1241,7 @@ impl ImageViewer {
         };
         for &delta in deltas {
             let idx = (self.index as isize + delta).rem_euclid(self.images.len() as isize) as usize;
-            let path = self.images[idx].clone();
+            let path = self.images[idx].as_ref().clone();
             // 压缩包不是图片：翻到它时才展开，不预取
             if archive::is_archive(&path) {
                 continue;
@@ -1408,8 +1408,8 @@ impl ImageViewer {
         let mut batch = batch;
         batch.sort_unstable();
         let cur = self.current_path().cloned(); // 合并会移动元素，先记下当前图
-        let lo = self.images.partition_point(|p| *p < batch[0]);
-        let hi = self.images.partition_point(|p| *p <= batch[batch.len() - 1]);
+        let lo = self.images.partition_point(|p| p.as_path() < batch[0].as_path());
+        let hi = self.images.partition_point(|p| p.as_path() <= batch[batch.len() - 1].as_path());
         let keep: HashSet<&PathBuf> = batch.iter().collect();
         let preserved: Vec<PathBuf> = self.images[lo..hi]
             .iter()
