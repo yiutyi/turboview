@@ -103,11 +103,24 @@ fn main() {
         forward_checksum = forward_checksum.wrapping_add(black_box(owned.as_os_str().len()));
     }
     let traversal = elapsed_ms(start);
-    println!("Vec<PathBuf>       build {build:9.2} ms · sort {sort:9.2} ms · sampled-get {sampled_get:9.2} ms · parts-fwd+rev {parts_traversal:9.2} ms · full-get-fwd+rev {traversal:9.2} ms · payload~{:.2} MiB",
+    let mut reusable_path = PathBuf::with_capacity(512);
+    let start = Instant::now();
+    let mut reused_checksum = 0usize;
+    for path in &paths {
+        reusable_path.clone_from(path);
+        reused_checksum = reused_checksum.wrapping_add(black_box(reusable_path.as_os_str().len()));
+    }
+    for path in paths.iter().rev() {
+        reusable_path.clone_from(path);
+        reused_checksum = reused_checksum.wrapping_add(black_box(reusable_path.as_os_str().len()));
+    }
+    let reused_get = elapsed_ms(start);
+    println!("Vec<PathBuf>       build {build:9.2} ms · sort {sort:9.2} ms · sampled-get {sampled_get:9.2} ms · parts-fwd+rev {parts_traversal:9.2} ms · full-get-fwd+rev {traversal:9.2} ms · reused-get-fwd+rev {reused_get:9.2} ms · payload~{:.2} MiB",
         bytes as f64 / 1_048_576.0);
     black_box(checksum);
     black_box(parts_checksum);
     black_box(forward_checksum);
+    black_box(reused_checksum);
     drop(paths);
 
     // Vec<Arc<Path>>
@@ -151,11 +164,28 @@ fn main() {
         forward_checksum = forward_checksum.wrapping_add(black_box(owned.as_os_str().len()));
     }
     let traversal = elapsed_ms(start);
-    println!("Vec<Arc<Path>>     build {build:9.2} ms · sort {sort:9.2} ms · sampled-get {sampled_get:9.2} ms · parts-fwd+rev {parts_traversal:9.2} ms · full-get-fwd+rev {traversal:9.2} ms · payload~{:.2} MiB",
+    let mut reusable_path = PathBuf::with_capacity(512);
+    let start = Instant::now();
+    let mut reused_checksum = 0usize;
+    for path in &paths {
+        let os = reusable_path.as_mut_os_string();
+        os.clear();
+        os.push(path.as_os_str());
+        reused_checksum = reused_checksum.wrapping_add(black_box(reusable_path.as_os_str().len()));
+    }
+    for path in paths.iter().rev() {
+        let os = reusable_path.as_mut_os_string();
+        os.clear();
+        os.push(path.as_os_str());
+        reused_checksum = reused_checksum.wrapping_add(black_box(reusable_path.as_os_str().len()));
+    }
+    let reused_get = elapsed_ms(start);
+    println!("Vec<Arc<Path>>     build {build:9.2} ms · sort {sort:9.2} ms · sampled-get {sampled_get:9.2} ms · parts-fwd+rev {parts_traversal:9.2} ms · full-get-fwd+rev {traversal:9.2} ms · reused-get-fwd+rev {reused_get:9.2} ms · payload~{:.2} MiB",
         bytes as f64 / 1_048_576.0);
     black_box(checksum);
     black_box(parts_checksum);
     black_box(forward_checksum);
+    black_box(reused_checksum);
     drop(paths);
 
     // PathStore + compact integer IDs
