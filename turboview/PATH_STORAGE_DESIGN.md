@@ -80,12 +80,53 @@ not RSS: allocator metadata, alignment, fragmentation, and exact hash-table
 layout are not measured.
 
 
+## Generation lifecycle prototype
+
+`path_generation.rs` adds an isolated lifecycle layer around v1:
+
+- Each scan calls `PathIndexManager::begin_generation` and builds a fresh
+  `PathStore` without mutating the active index.
+- A completed scan publishes in O(1) by swapping an `Arc<Generation>` under a
+  short `RwLock` write lock. Readers clone a `GenerationSnapshot` and do not
+  hold the lock while browsing.
+- `PathHandle` contains both a `GenerationId` and the dense `PathId`. A handle
+  from an older scan is rejected by a newer snapshot instead of accidentally
+  resolving to a different image at the same numeric index.
+- The most recently started scan wins. A slower earlier scan is rejected if a
+  newer scan has started; scan start and publication decisions are serialized
+  by the manager lock.
+- Replacing the active generation drops the manager's reference to the old one.
+  Existing readers may finish safely; the old allocation is reclaimed when the
+  last snapshot is dropped.
+- A failed or cancelled scan should simply drop its unpublished builder. It must
+  not publish a partial index.
+
+This is a lifecycle proof-of-concept, not production integration. It currently
+models a complete replacement scan, not incremental splice/merge. Callers must
+keep a snapshot alive for the duration of any operation that uses its handles.
+A long-lived UI component retaining old snapshots can intentionally delay memory
+reclamation, so production integration must define snapshot ownership boundaries.
+
+### Generation lifecycle tests
+
+The module tests cover complete publication, generation-scoped handles,
+out-of-order scan completion, old-generation reader safety, reclamation after the
+last snapshot drops, and empty generations. These tests still require Windows CI
+validation; they do not establish peak RSS or scan throughput.
+
 ## Current limitations before integration
 
-- `PathStore` is append-only. It has no per-record removal or filename-arena
-  reclamation. A production integration must either build a fresh store for a
-  completed scan and atomically swap generations, or implement and test a
-  reclaiming strategy. Repeated refreshes must not retain deleted paths forever.
+- `PathStore` remains append-only within a generation. Removal is implemented by
+  building and publishing a replacement generation, not by mutating individual
+  records.
+- Rebuilding a generation temporarily keeps old and new stores alive together.
+  Peak RSS during refresh must be measured at 1M/10M entries; atomic publication
+  improves reader latency, not peak-memory usage.
+- A cancelled/failed scan must drop its builder. Do not publish partial results.
+- Archive virtual paths need an explicit record kind and separate ordering/
+  refresh tests before the generation layer can back the complete viewer.
+- The prototype does not yet account for concurrent directory watchers or
+  incremental filesystem change events.
 - `pathbench` now samples the sorted `ids[i]` array and measures forward and
   reverse sequential traversal of that sorted ID list. Its PathStore traversal
   metric measures ID access only; path materialization is measured separately.
