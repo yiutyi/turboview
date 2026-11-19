@@ -2212,9 +2212,9 @@ impl ImageViewer {
         }
     }
 
-    /// 单击下一张。双击的第二次 ClickEvent 忽略，避免一次双击翻两张。
-    fn on_image_click(&mut self, event: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
-        if event.click_count() == 1 && !self.images.is_empty() {
+    /// 每次左键点击都翻到下一张；连续点击和双击不做节流或合并。
+    fn on_image_click(&mut self, _event: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if !self.images.is_empty() {
             self.nav_next(cx);
         }
     }
