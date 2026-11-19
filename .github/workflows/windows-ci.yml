@@ -83,16 +83,21 @@ jobs:
           $exe = Join-Path $env:GITHUB_WORKSPACE "turboview\target\release\turboview.exe"
           if (!(Test-Path $exe)) { throw "Release executable not found: $exe" }
           Copy-Item $exe $dist
-          Copy-Item (Join-Path $env:GITHUB_WORKSPACE "README.md") $dist
-          Copy-Item (Join-Path $env:GITHUB_WORKSPACE "LICENSE.md") $dist
+          Copy-Item (Join-Path $env:GITHUB_WORKSPACE "turboview\\README.md") (Join-Path $dist "README.md")
+          Copy-Item (Join-Path $env:GITHUB_WORKSPACE "LICENSE.md") (Join-Path $dist "LIBJPEG-TURBO-LICENSE.md")
+          Copy-Item (Join-Path $env:GITHUB_WORKSPACE "README.ijg") (Join-Path $dist "README.ijg")
+          Copy-Item (Join-Path $env:GITHUB_WORKSPACE "turboview\\CHANGELOG.md") $dist
           @'
-          TurboView - Windows x64 Portable
-          =================================
+          TurboView 0.2.0 - Windows x64 Portable
+          ======================================
+
+          Version: 0.2.0
+          Commit: $env:GITHUB_SHA
 
           Run turboview.exe directly. No Rust or Cargo installation is required.
-          Keep the executable and the accompanying license/readme files together.
+          Keep the executable, README.md, CHANGELOG.md and license notices together.
 
-          This package is built from the Git commit associated with this workflow run.
+          This package is built from the exact Git commit associated with this workflow run.
           Windows system graphics components and a compatible Microsoft Visual C++ runtime
           may still be provided by Windows or need to be installed separately.
           '@ | Set-Content -Encoding UTF8 (Join-Path $dist "PORTABLE-README.txt")
