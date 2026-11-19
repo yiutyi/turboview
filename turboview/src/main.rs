@@ -412,6 +412,8 @@ impl ImageViewer {
         // 拿不到就退回 1600×900（比原来的 1920×1080 保守，宁可先糊后清）。
         let viewport_px = estimate_viewport_px();
 
+        let dark_mode = win32::system_prefers_dark_mode();
+
         let mut viewer = Self {
             images,
             index,
@@ -472,7 +474,7 @@ impl ImageViewer {
             watch_tx: watch_tx.clone(),
             watch_rx,
             refreshing: HashSet::new(),
-            dark_mode: false,
+            dark_mode,
             logo: make_logo_image(),
             // [0]=亮色用深灰，[1]=暗色用浅灰；每帧只克隆 Arc
             folder_icons: [
@@ -2877,9 +2879,9 @@ impl Render for ImageViewer {
                     turbo::oriented_dims(image.orientation, image.src_width, image.src_height);
                 let scaled = image.width != sw || image.height != sh;
                 let dims = if scaled {
-                    format!("{}x{} (原图 {}x{})", image.width, image.height, sw, sh)
+                    format!("尺寸 {} × {}（原图 {} × {}）", image.width, image.height, sw, sh)
                 } else {
-                    format!("{}x{}", image.width, image.height)
+                    format!("尺寸 {} × {}", image.width, image.height)
                 };
                 let left = format!(
                     "[{}/{}]  {}  {}",
@@ -3160,32 +3162,33 @@ impl Render for ImageViewer {
             );
         }
 
-        // 目录树隐藏时，把恢复入口放到状态栏最左侧；不再悬浮遮挡图片。
-        let mut status_leading: Vec<AnyElement> = Vec::new();
-        if !self.sidebar_visible {
-            status_leading.push(
-                div()
-                    .id("sidebar-toggle")
-                    .w(px(22.0))
-                    .h(px(22.0))
-                    .flex_shrink_0()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded_sm()
-                    .text_color(colors.text)
-                    .cursor_pointer()
-                    .hover(|s| s.bg(colors.container))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, _: &MouseDownEvent, _w, cx| {
-                            this.toggle_sidebar(cx);
-                        }),
-                    )
-                    .child("◧")
-                    .into_any_element(),
-            );
-        }
+        // 目录树开/关按钮始终留在状态栏最左侧，避免按钮随状态消失。
+        // B 键与按钮共用 toggle_sidebar，初始隐藏目录树时也能立即恢复。
+        let status_leading: Vec<AnyElement> = vec![
+            div()
+                .id("sidebar-toggle")
+                .h(px(22.0))
+                .px_1()
+                .flex_shrink_0()
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_center()
+                .gap(px(4.0))
+                .rounded_sm()
+                .text_color(if self.sidebar_visible { colors.text } else { colors.disabled })
+                .cursor_pointer()
+                .hover(|s| s.bg(colors.container).text_color(colors.text))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _: &MouseDownEvent, _w, cx| {
+                        this.toggle_sidebar(cx);
+                    }),
+                )
+                .child("◧")
+                .child(if self.sidebar_visible { "目录树 开 · B" } else { "目录树 关 · B" })
+                .into_any_element(),
+        ];
 
         let status_bar = div()
             .id("status-bar")
