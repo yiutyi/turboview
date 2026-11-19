@@ -109,6 +109,28 @@ impl<K: Clone + Eq + Hash> TaskScheduler<K> {
         Some(item.key)
     }
 
+    /// Remove and return the next pending key without marking it as running.
+    /// This is useful when an external executor owns task lifecycle tracking.
+    pub fn pop_pending(&mut self) -> Option<K> {
+        let index = self
+            .pending
+            .iter()
+            .enumerate()
+            .max_by_key(|(_, item)| (item.priority, std::cmp::Reverse(item.sequence)))
+            .map(|(index, _)| index)?;
+        Some(self.pending.swap_remove(index).key)
+    }
+
+    /// Retain queued keys accepted by the predicate.
+    pub fn retain_pending(&mut self, mut keep: impl FnMut(&K) -> bool) {
+        self.pending.retain(|item| keep(&item.key));
+    }
+
+    /// Clear all queued work. Running work is unaffected.
+    pub fn clear_pending(&mut self) {
+        self.pending.clear();
+    }
+
     /// Release a worker slot. Returns false for an unknown/already-finished key.
     pub fn complete(&mut self, key: &K) -> bool {
         self.running.remove(key)
@@ -184,6 +206,16 @@ mod tests {
         assert_eq!(scheduler.cancel_pending(|key| *key == 10), 1);
         assert_eq!(scheduler.pending_len(), 1);
         assert_eq!(scheduler.start_next(), Some(11));
+    }
+
+    #[test]
+    fn external_executor_can_pop_and_prune_pending_work() {
+        let mut scheduler = TaskScheduler::new(8, 1);
+        scheduler.schedule(1, TaskPriority::Prefetch);
+        scheduler.schedule(2, TaskPriority::Current);
+        scheduler.retain_pending(|key| *key != 1);
+        assert_eq!(scheduler.pop_pending(), Some(2));
+        assert_eq!(scheduler.pop_pending(), None);
     }
 
     #[test]
