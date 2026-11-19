@@ -90,7 +90,7 @@ fn wide(s: &str) -> Vec<u16> {
 }
 
 /// 读取 Windows 个性化设置中的应用浅色/深色偏好。
-/// AppsUseLightTheme=0 表示深色，1 表示浅色；读取失败时安全回退浅色。
+/// SystemUsesLightTheme=0 表示深色，1 表示浅色；读取失败时安全回退浅色。
 #[link(name = "advapi32")]
 unsafe extern "system" {
     fn RegGetValueW(
@@ -108,7 +108,7 @@ pub fn system_prefers_dark_mode() -> bool {
     const HKEY_CURRENT_USER: isize = -2147483647;
     const RRF_RT_REG_DWORD: u32 = 0x0000_0010;
     let subkey = wide("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize");
-    let value_name = wide("AppsUseLightTheme");
+    let value_name = wide("SystemUsesLightTheme");
     let mut value: u32 = 1;
     let mut size = std::mem::size_of::<u32>() as u32;
     let status = unsafe {
