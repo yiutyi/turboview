@@ -499,14 +499,14 @@ mod tests {
     #[test]
     fn get_into_reuses_buffer_and_preserves_contents_on_invalid_id() {
         let mut store = PathStore::new();
-        let first = store.insert(Path::new(r"C:\\photos\\one.jpg"));
-        let second = store.insert(Path::new(r"D:\\archive\\nested\\two.png"));
-        let mut buffer = PathBuf::from(r"X:\\an-existing-long-buffer\\placeholder.bin");
+        let first = store.insert(Path::new(r"C:\photos\one.jpg"));
+        let second = store.insert(Path::new(r"D:\archive\nested\two.png"));
+        let mut buffer = PathBuf::from(r"X:\an-existing-long-buffer\placeholder.bin");
 
         assert!(store.get_into(first, &mut buffer));
-        assert_eq!(buffer, PathBuf::from(r"C:\\photos\\one.jpg"));
+        assert_eq!(buffer, PathBuf::from(r"C:\photos\one.jpg"));
         assert!(store.get_into(second, &mut buffer));
-        assert_eq!(buffer, PathBuf::from(r"D:\\archive\\nested\\two.png"));
+        assert_eq!(buffer, PathBuf::from(r"D:\archive\nested\two.png"));
 
         let before = buffer.clone();
         assert!(!store.get_into(PathId(u32::MAX), &mut buffer));
