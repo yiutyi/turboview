@@ -25,6 +25,27 @@ impl PathId {
     }
 }
 
+/// Borrowed directory/name view of a stored path.
+///
+/// This avoids constructing a PathBuf for consumers that only need display,
+/// grouping, extension/name inspection, or directory comparisons. It is not a
+/// filesystem path and must be materialized before calling filesystem APIs.
+#[derive(Clone, Copy, Debug)]
+pub struct PathParts<'a> {
+    pub directory: &'a Path,
+    pub file_name: &'a OsStr,
+}
+
+impl<'a> PathParts<'a> {
+    /// Materialize this pair into a caller-owned buffer, reusing its allocation.
+    #[inline]
+    pub fn write_to(self, target: &mut PathBuf) {
+        target.clear();
+        target.push(self.directory);
+        target.push(self.file_name);
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 struct ImageRecord {
     directory: u32,
@@ -129,38 +150,37 @@ impl PathStore {
         id
     }
 
-    /// Materializes a path into a caller-owned buffer, reusing its allocation.
-    ///
-    /// This is intended for sequential consumers (for example, a single image
-    /// decoder/navigation worker) that need an owned `PathBuf` only temporarily.
-    /// The buffer is unchanged when `id` is invalid.
+    /// Returns borrowed directory and filename components without allocating.
     #[inline]
-    pub fn get_into(&self, id: PathId, target: &mut PathBuf) -> bool {
-        let Some(record) = self.images.get(id.0 as usize) else {
-            return false;
-        };
-        let Some(directory) = self.directories.get(record.directory as usize) else {
-            return false;
-        };
-        let Some(key) = self.name_keys.get(record.name_key.as_range()) else {
-            return false;
-        };
+    pub fn parts(&self, id: PathId) -> Option<PathParts<'_>> {
+        let record = self.images.get(id.0 as usize)?;
+        let directory = self.directories.get(record.directory as usize)?;
+        let key = self.name_keys.get(record.name_key.as_range())?;
 
         // key layout: [TAG_NORMAL][payload][0x00]
         debug_assert_eq!(key.first(), Some(&TAG_NORMAL));
         debug_assert_eq!(key.last(), Some(&0));
-        let name = if key.len() >= 2 {
-            // SAFETY: these bytes were produced by `OsStr::as_encoded_bytes()`
-            // in `encode_name`, so they are a valid encoded form on this platform.
+        let file_name = if key.len() >= 2 {
+            // SAFETY: these bytes were produced by OsStr::as_encoded_bytes()
+            // in encode_name and remain owned by self for the returned lifetime.
             unsafe { OsStr::from_encoded_bytes_unchecked(&key[1..key.len() - 1]) }
         } else {
             OsStr::new("")
         };
+        Some(PathParts {
+            directory: directory.as_ref(),
+            file_name,
+        })
+    }
 
-        // Clear and append both components into the existing PathBuf allocation.
-        target.clear();
-        target.push(directory.as_ref());
-        target.push(name);
+    /// Materializes a path into a caller-owned buffer, reusing its allocation.
+    /// The buffer is unchanged when id is invalid.
+    #[inline]
+    pub fn get_into(&self, id: PathId, target: &mut PathBuf) -> bool {
+        let Some(parts) = self.parts(id) else {
+            return false;
+        };
+        parts.write_to(target);
         true
     }
 
