@@ -2702,6 +2702,25 @@ impl ImageViewer {
     }
 }
 
+/// 状态栏纯图标按钮的悬停提示气泡。
+/// 按钮本体只保留图标，开关状态与操作说明都放到这里，鼠标悬停时显示。
+struct StatusTip(String);
+
+impl Render for StatusTip {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .flex()
+            .items_center()
+            .h(px(22.0))
+            .px_1()
+            .rounded_sm()
+            .bg(gpui::rgb(0x242830))
+            .text_xs()
+            .text_color(gpui::rgb(0xEDEDED))
+            .child(self.0.clone())
+    }
+}
+
 impl Render for ImageViewer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // 首次渲染：抢占焦点（键盘事件才能派发到根节点）
@@ -2947,57 +2966,61 @@ impl Render for ImageViewer {
         // （亮色=黑 / 暗色=白），不引入任何色块，保持状态栏干净。
         let mut badges: Vec<AnyElement> = Vec::new();
 
-        // 压缩包浏览信息
+        // 压缩包浏览信息：纯图标 + 悬停提示显示 "包名 › N 张"。
         if let Some(info) = &self.archive_info {
+            let tip = info.clone();
             badges.push(
                 div()
+                    .id("badge-archive")
                     .h(px(18.0))
                     .flex()
                     .flex_row()
                     .items_center()
-                    .gap(px(4.0))
                     .px_1()
                     .text_xs()
                     .text_color(colors.text)
+                    .tooltip(move |_, cx| {
+                        let tip = tip.clone();
+                        cx.new(|_| StatusTip(tip)).into()
+                    })
                     .child(
                         img(ImageSource::Render(self.status_icons[(self.dark_mode as usize)][0].clone()))
                             .w(px(15.0))
                             .h(px(15.0))
                             .flex_shrink_0(),
                     )
-                    .child(info.clone())
                     .into_any_element(),
             );
         }
-        // 随机模式开关：常驻显示（开/关都可见），点击即切换。
-        // 开启时用正常文字色，关闭时降到 disabled 色；无任何背景色块。
+        // 随机模式开关：纯图标 + 悬停提示。开 = 正常亮度，关 = 降到 disabled 亮度。
+        // 点击即切换，操作与 R 键等价。
+        let random_tip = if self.random_mode {
+            "随机：开（点击关闭）"
+        } else {
+            "随机：关（点击开启）"
+        }
+        .to_string();
         badges.push(
             div()
+                .id("toggle-random")
                 .h(px(18.0))
                 .flex()
                 .flex_row()
                 .items_center()
-                .gap(px(4.0))
                 .px_1()
-                .text_xs()
-                .text_color(if self.random_mode {
-                    colors.text
-                } else {
-                    colors.disabled
-                })
                 .cursor_pointer()
+                .opacity(if self.random_mode { 1.0 } else { 0.4 })
                 .hover(|s| s.opacity(0.6))
+                .tooltip(move |_, cx| {
+                    let t = random_tip.clone();
+                    cx.new(|_| StatusTip(t)).into()
+                })
                 .child(
                     img(ImageSource::Render(self.status_icons[(self.dark_mode as usize)][1].clone()))
                         .w(px(15.0))
                         .h(px(15.0))
                         .flex_shrink_0(),
                 )
-                .child(if self.random_mode {
-                    "随机 开"
-                } else {
-                    "随机 关"
-                })
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|this, _: &MouseDownEvent, _w, cx| {
@@ -3008,34 +3031,33 @@ impl Render for ImageViewer {
                 )
                 .into_any_element(),
         );
-        // 幻灯片开关：常驻显示（开/关都可见），点击即开/关播放
+        // 幻灯片开关：纯图标 + 悬停提示，点击即开/关播放。
+        let slideshow_tip = if self.slideshow {
+            format!("幻灯：开，每 {} 秒切换（点击停止）", SLIDESHOW_INTERVAL)
+        } else {
+            "幻灯：关（点击播放）".to_string()
+        };
         badges.push(
             div()
+                .id("toggle-slideshow")
                 .h(px(18.0))
                 .flex()
                 .flex_row()
                 .items_center()
-                .gap(px(4.0))
                 .px_1()
-                .text_xs()
-                .text_color(if self.slideshow {
-                    colors.text
-                } else {
-                    colors.disabled
-                })
                 .cursor_pointer()
+                .opacity(if self.slideshow { 1.0 } else { 0.4 })
                 .hover(|s| s.opacity(0.6))
+                .tooltip(move |_, cx| {
+                    let t = slideshow_tip.clone();
+                    cx.new(|_| StatusTip(t)).into()
+                })
                 .child(
                     img(ImageSource::Render(self.status_icons[(self.dark_mode as usize)][2].clone()))
                         .w(px(15.0))
                         .h(px(15.0))
                         .flex_shrink_0(),
                 )
-                .child(if self.slideshow {
-                    format!("幻灯 开 {}s", SLIDESHOW_INTERVAL)
-                } else {
-                    "幻灯 关".to_string()
-                })
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|this, _: &MouseDownEvent, _w, cx| {
@@ -3045,8 +3067,14 @@ impl Render for ImageViewer {
                 )
                 .into_any_element(),
         );
-        // 原图开关：开 = 1:1 原始像素，关 = 适应窗口（默认关）。
+        // 原图开关：纯图标 + 悬停提示。开 = 1:1 原始像素，关 = 适应窗口（默认关）。
         // 与 `1` / `0` 键等价，给鼠标用户一个可点的入口。
+        let original_tip = if self.original_view {
+            "原图：开（1:1 原始像素，点击切回适应窗口）"
+        } else {
+            "原图：关（适应窗口，点击切到 1:1）"
+        }
+        .to_string();
         badges.push(
             div()
                 .id("toggle-original")
@@ -3054,27 +3082,20 @@ impl Render for ImageViewer {
                 .flex()
                 .flex_row()
                 .items_center()
-                .gap(px(4.0))
                 .px_1()
-                .text_xs()
-                .text_color(if self.original_view {
-                    colors.text
-                } else {
-                    colors.disabled
-                })
                 .cursor_pointer()
+                .opacity(if self.original_view { 1.0 } else { 0.4 })
                 .hover(|s| s.opacity(0.6))
+                .tooltip(move |_, cx| {
+                    let t = original_tip.clone();
+                    cx.new(|_| StatusTip(t)).into()
+                })
                 .child(
                     img(ImageSource::Render(self.status_icons[(self.dark_mode as usize)][3].clone()))
                         .w(px(15.0))
                         .h(px(15.0))
                         .flex_shrink_0(),
                 )
-                .child(if self.original_view {
-                    "原图 开"
-                } else {
-                    "原图 关"
-                })
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|this, _: &MouseDownEvent, w, cx| {
@@ -3084,8 +3105,14 @@ impl Render for ImageViewer {
                 )
                 .into_any_element(),
         );
-        // 主题开关：与 T 键共用 toggle_theme。图标走启动时栅格化的位图，
-        // 不依赖这套 Windows 后端不保证支持的 svg() 元素。
+        // 主题开关：纯图标 + 悬停提示，与 T 键共用 toggle_theme。
+        // 图标走启动时栅格化的位图，不依赖这套 Windows 后端不保证支持的 svg() 元素。
+        let theme_tip = if self.dark_mode {
+            "当前：暗色主题（点击切换为亮色）"
+        } else {
+            "当前：亮色主题（点击切换为暗色）"
+        }
+        .to_string();
         badges.push(
             div()
                 .id("toggle-theme")
@@ -3093,12 +3120,13 @@ impl Render for ImageViewer {
                 .flex()
                 .flex_row()
                 .items_center()
-                .gap(px(4.0))
                 .px_1()
-                .text_xs()
-                .text_color(colors.text)
                 .cursor_pointer()
                 .hover(|s| s.opacity(0.6))
+                .tooltip(move |_, cx| {
+                    let t = theme_tip.clone();
+                    cx.new(|_| StatusTip(t)).into()
+                })
                 .child(
                     img(ImageSource::Render(
                         self.theme_icons[(self.dark_mode as usize)].clone(),
@@ -3107,7 +3135,6 @@ impl Render for ImageViewer {
                     .h(px(12.0))
                     .flex_shrink_0(),
                 )
-                .child(if self.dark_mode { "暗色" } else { "亮色" })
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|this, _: &MouseDownEvent, _w, cx| {
@@ -3116,7 +3143,13 @@ impl Render for ImageViewer {
                 )
                 .into_any_element(),
         );
-        // 全屏按钮：与 F 快捷键共用同一状态，ESC 也可退出。
+        // 全屏按钮：纯图标 + 悬停提示，与 F 快捷键共用同一状态，ESC 也可退出。
+        let fullscreen_tip = if self.fullscreen {
+            "退出全屏（点击或按 ESC）"
+        } else {
+            "进入全屏（点击或按 F）"
+        }
+        .to_string();
         badges.push(
             div()
                 .id("toggle-fullscreen")
@@ -3124,12 +3157,14 @@ impl Render for ImageViewer {
                 .flex()
                 .flex_row()
                 .items_center()
-                .gap(px(4.0))
                 .px_1()
-                .text_xs()
-                .text_color(if self.fullscreen { gpui::rgb(0x3B82F6) } else { colors.disabled })
                 .cursor_pointer()
+                .opacity(if self.fullscreen { 1.0 } else { 0.4 })
                 .hover(|s| s.opacity(0.72))
+                .tooltip(move |_, cx| {
+                    let t = fullscreen_tip.clone();
+                    cx.new(|_| StatusTip(t)).into()
+                })
                 .child(
                     img(ImageSource::Render(
                         self.status_icons[(self.dark_mode as usize)][4].clone(),
@@ -3138,7 +3173,6 @@ impl Render for ImageViewer {
                     .h(px(15.0))
                     .flex_shrink_0(),
                 )
-                .child(if self.fullscreen { "退出全屏" } else { "全屏" })
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|this, _: &MouseDownEvent, _w, cx| {
@@ -3165,8 +3199,14 @@ impl Render for ImageViewer {
             );
         }
 
-        // 目录树开/关按钮始终留在状态栏最左侧，避免按钮随状态消失。
+        // 目录树开/关按钮始终留在状态栏最左侧，纯图标 + 悬停提示。
         // B 键与按钮共用 toggle_sidebar，初始隐藏目录树时也能立即恢复。
+        let sidebar_tip = if self.sidebar_visible {
+            "目录树：开（点击或按 B 收起）"
+        } else {
+            "目录树：关（点击或按 B 展开）"
+        }
+        .to_string();
         let status_leading: Vec<AnyElement> = vec![
             div()
                 .id("sidebar-toggle")
@@ -3177,11 +3217,14 @@ impl Render for ImageViewer {
                 .flex_row()
                 .items_center()
                 .justify_center()
-                .gap(px(4.0))
                 .rounded_sm()
-                .text_color(if self.sidebar_visible { colors.text } else { colors.disabled })
                 .cursor_pointer()
-                .hover(|s| s.bg(colors.container).text_color(colors.text))
+                .opacity(if self.sidebar_visible { 1.0 } else { 0.4 })
+                .hover(|s| s.bg(colors.container).opacity(1.0))
+                .tooltip(move |_, cx| {
+                    let t = sidebar_tip.clone();
+                    cx.new(|_| StatusTip(t)).into()
+                })
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|this, _: &MouseDownEvent, _w, cx| {
@@ -3189,7 +3232,6 @@ impl Render for ImageViewer {
                     }),
                 )
                 .child("◧")
-                .child(if self.sidebar_visible { "目录树 开 · B" } else { "目录树 关 · B" })
                 .into_any_element(),
         ];
 
