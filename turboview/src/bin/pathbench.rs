@@ -50,9 +50,19 @@ fn main() {
         checksum = checksum.wrapping_add(black_box(paths[i].as_os_str().len()));
     }
     let nav = elapsed_ms(start);
-    println!("Vec<PathBuf>       build {build:9.2} ms · sort {sort:9.2} ms · indexed {nav:9.2} ms · payload~{:.2} MiB",
+    let start = Instant::now();
+    let mut forward_checksum = 0usize;
+    for path in &paths {
+        forward_checksum = forward_checksum.wrapping_add(black_box(path.as_os_str().len()));
+    }
+    for path in paths.iter().rev() {
+        forward_checksum = forward_checksum.wrapping_add(black_box(path.as_os_str().len()));
+    }
+    let traversal = elapsed_ms(start);
+    println!("Vec<PathBuf>       build {build:9.2} ms · sort {sort:9.2} ms · indexed {nav:9.2} ms · fwd+rev {traversal:9.2} ms · payload~{:.2} MiB",
         bytes as f64 / 1_048_576.0);
     black_box(checksum);
+    black_box(forward_checksum);
     drop(paths);
 
     // Vec<Arc<Path>>
@@ -72,9 +82,19 @@ fn main() {
         checksum = checksum.wrapping_add(black_box(shared.as_os_str().len()));
     }
     let nav = elapsed_ms(start);
-    println!("Vec<Arc<Path>>     build {build:9.2} ms · sort {sort:9.2} ms · indexed {nav:9.2} ms · payload~{:.2} MiB",
+    let start = Instant::now();
+    let mut forward_checksum = 0usize;
+    for path in &paths {
+        forward_checksum = forward_checksum.wrapping_add(black_box(path.as_os_str().len()));
+    }
+    for path in paths.iter().rev() {
+        forward_checksum = forward_checksum.wrapping_add(black_box(path.as_os_str().len()));
+    }
+    let traversal = elapsed_ms(start);
+    println!("Vec<Arc<Path>>     build {build:9.2} ms · sort {sort:9.2} ms · indexed {nav:9.2} ms · fwd+rev {traversal:9.2} ms · payload~{:.2} MiB",
         bytes as f64 / 1_048_576.0);
     black_box(checksum);
+    black_box(forward_checksum);
     drop(paths);
 
     // PathStore + compact integer IDs
@@ -100,6 +120,16 @@ fn main() {
     let index_ms = elapsed_ms(start);
 
     let start = Instant::now();
+    let mut traversal_checksum = 0usize;
+    for id in &ids {
+        traversal_checksum = traversal_checksum.wrapping_add(black_box(id.index()));
+    }
+    for id in ids.iter().rev() {
+        traversal_checksum = traversal_checksum.wrapping_add(black_box(id.index()));
+    }
+    let traversal_ms = elapsed_ms(start);
+
+    let start = Instant::now();
     let mut checksum = 0usize;
     for i in (0..count).step_by(97) {
         if let Some(path) = store.get(ids[i]) {
@@ -107,9 +137,10 @@ fn main() {
         }
     }
     let materialize_ms = elapsed_ms(start);
-    println!("PathStore + ID     build {build:9.2} ms · sort {sort:9.2} ms · sorted-id {index_ms:9.2} ms · materialize {materialize_ms:9.2} ms · estimated~{:.2} MiB · dirs {}",
+    println!("PathStore + ID     build {build:9.2} ms · sort {sort:9.2} ms · indexed {index_ms:9.2} ms · fwd+rev-id {traversal_ms:9.2} ms · materialize {materialize_ms:9.2} ms · estimated~{:.2} MiB · dirs {}",
         bytes as f64 / 1_048_576.0, store.directory_count());
     black_box(index_checksum);
+    black_box(traversal_checksum);
     black_box(checksum);
 
     println!("\nNote: PathStore sort compares precomputed byte keys (no PathBuf materialization).");
