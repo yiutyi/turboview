@@ -2,7 +2,7 @@
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::ffi::OsStr;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Component, Path, PathBuf, Prefix};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub struct PrefixPathId(u32);
@@ -77,7 +77,18 @@ impl PrefixPathStore {
 fn hash64(bytes: &[u8]) -> u64 { let mut h=0xcbf29ce484222325u64; for &b in bytes { h ^= b as u64; h=h.wrapping_mul(0x100000001b3); } h }
 fn encode_component(dst: &mut Vec<u8>, c: Component<'_>) {
     match c {
-        Component::Prefix(p) => { dst.push(0); dst.extend_from_slice(p.as_os_str().as_encoded_bytes()); dst.push(0); },
+        Component::Prefix(p) => {
+            dst.push(0);
+            match p.kind() {
+                Prefix::Verbatim(s) => { dst.push(0); dst.extend_from_slice(s.as_encoded_bytes()); }
+                Prefix::VerbatimUNC(a,b) => { dst.push(1); dst.extend_from_slice(a.as_encoded_bytes()); dst.push(0); dst.extend_from_slice(b.as_encoded_bytes()); }
+                Prefix::VerbatimDisk(d) => { dst.push(2); dst.push(d); }
+                Prefix::DeviceNS(s) => { dst.push(3); dst.extend_from_slice(s.as_encoded_bytes()); }
+                Prefix::UNC(a,b) => { dst.push(4); dst.extend_from_slice(a.as_encoded_bytes()); dst.push(0); dst.extend_from_slice(b.as_encoded_bytes()); }
+                Prefix::Disk(d) => { dst.push(5); dst.push(d); }
+            }
+            dst.push(0);
+        },
         Component::RootDir => dst.extend_from_slice(&[1,0]),
         Component::CurDir => dst.extend_from_slice(&[2,0]),
         Component::ParentDir => dst.extend_from_slice(&[3,0]),
