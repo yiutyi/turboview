@@ -41,6 +41,7 @@ use turbo::{DecodedImage, RoiRect};
 use turboview::dirtree::{DirTree, fmt_count};
 use turboview::scanner::scan_one_level;
 use turboview::scheduler::{TaskPriority, TaskScheduler};
+use turboview::task::TaskRegistry;
 
 actions!(
     turboview,
@@ -313,6 +314,8 @@ struct ImageViewer {
     /// 已经在等预热结果（防止重复挂等待任务）
     preload_waiting: bool,
     in_flight: Vec<PathBuf>,
+    /// 运行任务身份与协作取消；旧回调不能清除同路径的新一代任务
+    active_tasks: TaskRegistry<PathBuf>,
     /// 扫描代际：切换根目录后，旧根的迟到扫描结果会被丢弃
     scan_generation: u64,
     /// 进行中的惰性层级扫描数（状态栏提示用）
@@ -447,6 +450,7 @@ impl ImageViewer {
             preload_path: std::sync::Arc::new(std::sync::Mutex::new(None)),
             preload_waiting: false,
             in_flight: Vec::new(),
+            active_tasks: TaskRegistry::default(),
             scan_generation: 0,
             pending_levels: 0,
             nav_target: None,
@@ -786,6 +790,7 @@ impl ImageViewer {
         };
         // 文件被删除时同步移除尚未派发的预取，避免队列继续读失效路径。
         self.prefetch_queue.cancel_pending(|p| belongs(p));
+        self.active_tasks.cancel_where(|p| belongs(p));
         let cur = self.current_path().map(Path::to_path_buf);
         let cur_gone = cur.as_ref().is_some_and(|p| belongs(p));
         self.images.retain(|p| !belongs(p));
@@ -1065,6 +1070,9 @@ impl ImageViewer {
     }
 
     fn spawn_load_now(&mut self, path: PathBuf, set_current: bool, cx: &mut Context<Self>) {
+        let task = self.active_tasks.start(path.clone());
+        let task_id = task.id;
+        let cancellation = task.cancellation;
         self.in_flight.push(path.clone());
         let fast = self.fast_mode;
         let dec_gen = self.decode_gen;
@@ -1090,6 +1098,9 @@ impl ImageViewer {
                     if !set_current {
                         win32::thread_priority_low();
                     }
+                    if !cancellation.is_active() {
+                        return Err(anyhow::anyhow!("decode cancelled"));
+                    }
                     let r = decode_any(&decode_path, fast, max_dim);
                     if !set_current {
                         win32::thread_priority_normal();
@@ -1098,35 +1109,51 @@ impl ImageViewer {
                 })
                 .await;
 
+            // 第三方解码器本身不可中断；解码返回后立即检查取消信号，
+            // 避免已失效任务继续重试或把结果送回 UI。
+
             // 文件可能还在下载/拷贝中（NAS 上的扫描本很常见）：读到半个 JPEG
             // 时等一下重试。用异步 timer 而不是 thread::sleep —— 后者会占死
             // 一个 executor worker 800ms，低配机核少时把预取/ROI 全堵在后面。
-            if let Err(e) = &result {
-                if is_truncated_jpeg_error(&format!("{e:#}")) {
+            if cancellation.is_active() {
+                if let Err(e) = &result {
+                    if is_truncated_jpeg_error(&format!("{e:#}")) {
                     if trace_enabled() {
                         trace("decode truncated → retry in 800ms");
                     }
                     cx.background_executor()
                         .timer(Duration::from_millis(800))
                         .await;
-                    let retry_path = path.clone();
-                    result = cx
-                        .background_executor()
-                        .spawn(async move {
-                            if !set_current {
-                                win32::thread_priority_low();
-                            }
-                            let r = decode_any(&retry_path, fast, max_dim);
-                            if !set_current {
-                                win32::thread_priority_normal();
-                            }
-                            r
-                        })
-                        .await;
+                    if cancellation.is_active() {
+                        let retry_path = path.clone();
+                        let retry_token = cancellation.clone();
+                        result = cx
+                            .background_executor()
+                            .spawn(async move {
+                                if !retry_token.is_active() {
+                                    return Err(anyhow::anyhow!("decode cancelled"));
+                                }
+                                if !set_current {
+                                    win32::thread_priority_low();
+                                }
+                                let r = decode_any(&retry_path, fast, max_dim);
+                                if !set_current {
+                                    win32::thread_priority_normal();
+                                }
+                                r
+                            })
+                            .await;
+                    }
+                    }
                 }
             }
 
             view.update(cx, |view, cx| {
+                // 只有当前任务代际可以清理 in_flight 并发布结果。
+                // reset / 模式切换 / 删除后的旧回调会在这里无副作用退出。
+                if !cancellation.is_active() || !view.active_tasks.finish(&path, task_id) {
+                    return;
+                }
                 view.in_flight.retain(|p| p != &path);
                 // 让位后立刻补发排队中的预取
                 view.pump_prefetch_queue(cx);
@@ -1310,6 +1337,7 @@ impl ImageViewer {
         self.error = None;
         self.cache.clear();
         self.in_flight.clear();
+        self.active_tasks.cancel_where(|_| true);
         self.prefetch_queue.clear_pending();
         self.thumb_gen += 1;
         self.slideshow = false;
@@ -1669,6 +1697,7 @@ impl ImageViewer {
         self.thumb_gen += 1; // 同时作废旧 fast 模式的预览帧
         self.cache.clear();
         self.in_flight.clear();
+        self.active_tasks.cancel_where(|_| true);
         self.prefetch_queue.clear_pending();
         let index = self.index;
         self.goto(index, cx);
@@ -1940,6 +1969,7 @@ impl ImageViewer {
         match win32::delete_to_recycle_bin(&path) {
             Ok(()) => {
                 self.cache.retain(|(p, _)| p != &path);
+                self.active_tasks.cancel(&path);
                 self.in_flight.retain(|p| p != &path);
                 if let Some(i) = self.find_image_index(&path) {
                     self.images.remove(i);
