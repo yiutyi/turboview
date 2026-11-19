@@ -2112,7 +2112,7 @@ impl ImageViewer {
         let target = match self.current_path() {
             Some(path) => match split_virtual(path) {
                 Some((archive, _)) => archive,
-                None => path.clone(),
+                None => path.to_path_buf(),
             },
             None => match self.tree.root_path() {
                 Some(root) => root,
