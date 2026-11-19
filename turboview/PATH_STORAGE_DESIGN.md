@@ -72,6 +72,22 @@ entries. Both are deterministic representation comparisons, not substitutes for
 a real library's path distribution. Record the Windows build, CPU model, RAM, storage type, and median
 of the runs alongside the output.
 
+## Reusable path materialization
+
+`PathStore::get` returns a newly owned `PathBuf`, which is convenient when the
+caller must retain an independent path. Repeated navigation/decode consumers
+often need only one temporary path at a time. `PathStore::get_into` therefore
+writes into a caller-owned `PathBuf` and uses `clone_from` on the interned
+directory so the destination can reuse its existing capacity.
+
+The benchmark now reports both full forward/reverse `get` and
+`get_into` traversal. This does not eliminate copying path bytes: the OS-facing
+decoder still needs a complete path. It is specifically intended to eliminate
+repeated per-image `PathBuf` allocation churn for a sequential consumer.
+Benchmark on Windows before deciding whether the viewer should adopt it; a
+single reusable buffer is not suitable when multiple asynchronous decode jobs
+need to retain different paths concurrently.
+
 The implementation currently appends encoded filename bytes directly into the
 arena. `PathStore::cmp` compares precomputed component-aware keys and does not
 materialize `PathBuf` values during sorting. The Windows-only round-trip test
