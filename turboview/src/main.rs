@@ -1987,7 +1987,7 @@ impl ImageViewer {
         if let Some(path) = self.current_path() {
             let target = match split_virtual(path) {
                 Some((archive, _)) => archive,
-                None => path.clone(),
+                None => path.to_path_buf(),
             };
             if let Err(e) = win32::reveal_in_explorer(&target) {
                 self.note = Some(format!("定位失败: {e}"));
