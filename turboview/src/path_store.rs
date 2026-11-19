@@ -157,8 +157,9 @@ impl PathStore {
             OsStr::new("")
         };
 
-        // PathBuf::clone_from reuses the destination's capacity when possible.
-        target.clone_from(directory.as_ref());
+        // Clear and append both components into the existing PathBuf allocation.
+        target.clear();
+        target.push(directory.as_ref());
         target.push(name);
         true
     }
