@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
-use crate::path_store::{PathId, PathStore};
+use crate::path_store::{PathId, PathParts, PathStore};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct GenerationId(u64);
@@ -73,6 +73,26 @@ impl GenerationSnapshot {
             generation: self.inner.id,
             id,
         })
+    }
+
+    /// Returns borrowed path components without constructing a PathBuf.
+    /// Handles from another generation are rejected.
+    #[inline]
+    pub fn parts(&self, handle: PathHandle) -> Option<PathParts<'_>> {
+        if handle.generation != self.inner.id {
+            return None;
+        }
+        self.inner.store.parts(handle.id)
+    }
+
+    /// Materializes into a caller-owned buffer, reusing its allocation.
+    /// The buffer is unchanged for a stale or out-of-range handle.
+    #[inline]
+    pub fn get_into(&self, handle: PathHandle, target: &mut PathBuf) -> bool {
+        if handle.generation != self.inner.id {
+            return false;
+        }
+        self.inner.store.get_into(handle.id, target)
     }
 
     /// Returns None for out-of-range handles and handles from another generation.
@@ -236,6 +256,23 @@ mod tests {
         let handle = snapshot.handle_at(1).unwrap();
         assert_eq!(snapshot.get(handle), Some(PathBuf::from(r"C:\photos\b.jpg")));
         assert_eq!(manager.snapshot().unwrap().id(), snapshot.id());
+    }
+
+    #[test]
+    fn borrowed_parts_and_reused_buffer_match_materialized_path() {
+        let manager = PathIndexManager::new();
+        let mut build = manager.begin_generation(1, 32, 1);
+        add(&mut build, r"C:\\photos\\sample.jpg");
+        let snapshot = manager.publish(build).unwrap();
+        let handle = snapshot.handle_at(0).unwrap();
+
+        let parts = snapshot.parts(handle).unwrap();
+        assert_eq!(parts.directory, Path::new(r"C:\\photos"));
+        assert_eq!(parts.file_name, std::ffi::OsStr::new("sample.jpg"));
+
+        let mut buffer = PathBuf::from(r"X:\\long\\buffer\\placeholder.bin");
+        assert!(snapshot.get_into(handle, &mut buffer));
+        assert_eq!(buffer, PathBuf::from(r"C:\\photos\\sample.jpg"));
     }
 
     #[test]
