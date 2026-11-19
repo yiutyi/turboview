@@ -73,6 +73,9 @@ jobs:
       - name: Build release application
         run: cargo build --release --locked
 
+      - name: Build path storage benchmark
+        run: cargo build --release --bin pathbench --locked
+
       - name: Assemble portable package
         shell: pwsh
         working-directory: .
@@ -83,6 +86,25 @@ jobs:
           $exe = Join-Path $env:GITHUB_WORKSPACE "turboview\target\release\turboview.exe"
           if (!(Test-Path $exe)) { throw "Release executable not found: $exe" }
           Copy-Item $exe $dist
+          $bench = Join-Path $env:GITHUB_WORKSPACE "turboview\target\release\pathbench.exe"
+          if (!(Test-Path $bench)) { throw "Path benchmark executable not found: $bench" }
+          $tools = Join-Path $dist "tools"
+          New-Item -ItemType Directory -Force -Path $tools | Out-Null
+          Copy-Item $bench $tools
+          @'
+          TurboView path storage benchmark
+          =================================
+
+          Open PowerShell in this tools directory and run:
+            .\pathbench.exe 100000
+            .\pathbench.exe 1000000
+
+          This synthetic benchmark compares Vec<PathBuf>, Vec<Arc<Path>>,
+          and PathStore + PathId. It is not a substitute for measuring a real
+          photo library. Run on the target PC and repeat each size three times.
+          Record CPU, RAM, Windows version, and whether the library is on HDD,
+          SATA SSD, NVMe, or a network share.
+          '@ | Set-Content -Encoding UTF8 (Join-Path $tools "BENCHMARK-README.txt")
           Copy-Item (Join-Path $env:GITHUB_WORKSPACE "README.md") $dist
           Copy-Item (Join-Path $env:GITHUB_WORKSPACE "LICENSE.md") $dist
           @'
@@ -92,7 +114,7 @@ jobs:
           Run turboview.exe directly. No Rust or Cargo installation is required.
           Keep the executable and the accompanying license/readme files together.
 
-          This package is built from the main branch commit selected by this workflow.
+          This package is built from the exact commit selected by this workflow.
           Windows system graphics components and a compatible Microsoft Visual C++
           runtime may still be provided by Windows or need to be installed separately.
           '@ | Set-Content -Encoding UTF8 (Join-Path $dist "PORTABLE-README.txt")
