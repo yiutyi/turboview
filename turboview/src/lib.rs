@@ -2,6 +2,7 @@
 
 pub mod archive;
 pub mod dirtree;
+pub mod path_store;
 pub mod scanner;
 pub mod turbo;
 pub mod win32;
