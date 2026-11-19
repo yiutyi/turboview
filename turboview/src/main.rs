@@ -784,7 +784,7 @@ impl ImageViewer {
             gone.contains(p) || split_virtual(p).is_some_and(|(a, _)| gone.contains(&a))
         };
         let cur = self.current_path().map(Path::to_path_buf);
-        let cur_gone = cur.as_ref().is_some_and(belongs);
+        let cur_gone = cur.as_ref().is_some_and(|p| belongs(p));
         self.images.retain(|p| !belongs(p));
         self.cache.retain(|(p, _)| !belongs(p));
         self.in_flight.retain(|p| !belongs(p));
