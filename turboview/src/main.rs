@@ -1095,16 +1095,19 @@ impl ImageViewer {
             let mut result = cx
                 .background_executor()
                 .spawn(async move {
+                    if !decode_cancellation.is_active() {
+                        return Err(anyhow::anyhow!("decode cancelled"));
+                    }
                     // 预取降优先级：低配机上 4 个同级线程会把当前图的解码挤慢
                     if !set_current {
                         win32::thread_priority_low();
                     }
-                    if !decode_cancellation.is_active() {
-                        return Err(anyhow::anyhow!("decode cancelled"));
-                    }
                     let r = decode_any(&decode_path, fast, max_dim);
                     if !set_current {
                         win32::thread_priority_normal();
+                    }
+                    if !decode_cancellation.is_active() {
+                        return Err(anyhow::anyhow!("decode cancelled"));
                     }
                     r
                 })
@@ -1119,32 +1122,35 @@ impl ImageViewer {
             if cancellation.is_active() {
                 if let Err(e) = &result {
                     if is_truncated_jpeg_error(&format!("{e:#}")) {
-                    if trace_enabled() {
-                        trace("decode truncated → retry in 800ms");
-                    }
-                    cx.background_executor()
-                        .timer(Duration::from_millis(800))
-                        .await;
-                    if cancellation.is_active() {
-                        let retry_path = path.clone();
-                        let retry_token = cancellation.clone();
-                        result = cx
-                            .background_executor()
-                            .spawn(async move {
-                                if !retry_token.is_active() {
-                                    return Err(anyhow::anyhow!("decode cancelled"));
-                                }
-                                if !set_current {
-                                    win32::thread_priority_low();
-                                }
-                                let r = decode_any(&retry_path, fast, max_dim);
-                                if !set_current {
-                                    win32::thread_priority_normal();
-                                }
-                                r
-                            })
+                        if trace_enabled() {
+                            trace("decode truncated → retry in 800ms");
+                        }
+                        cx.background_executor()
+                            .timer(Duration::from_millis(800))
                             .await;
-                    }
+                        if cancellation.is_active() {
+                            let retry_path = path.clone();
+                            let retry_token = cancellation.clone();
+                            result = cx
+                                .background_executor()
+                                .spawn(async move {
+                                    if !retry_token.is_active() {
+                                        return Err(anyhow::anyhow!("decode cancelled"));
+                                    }
+                                    if !set_current {
+                                        win32::thread_priority_low();
+                                    }
+                                    let r = decode_any(&retry_path, fast, max_dim);
+                                    if !set_current {
+                                        win32::thread_priority_normal();
+                                    }
+                                    if !retry_token.is_active() {
+                                        return Err(anyhow::anyhow!("decode cancelled"));
+                                    }
+                                    r
+                                })
+                                .await;
+                        }
                     }
                 }
             }
