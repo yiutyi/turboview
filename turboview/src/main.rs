@@ -96,9 +96,9 @@ const PREVIEW_MIN_THUMB: u32 = 512;
 const PREVIEW_MIN_BYTES: u64 = 1024 * 1024;
 
 /// 预取缓存的字节预算上限；实际预算按可用内存自适应（见 `ImageViewer::new`）
-const CACHE_BUDGET_CAP: usize = 256 * 1024 * 1024;
-/// 低内存机器也不低于这个值，否则来回翻两张就全部落空
-const CACHE_BUDGET_FLOOR: usize = 64 * 1024 * 1024;
+const CACHE_BUDGET_CAP: usize = 96 * 1024 * 1024;
+/// 保留基本的前后翻页缓存，但避免图库元数据之外再常驻数百 MB 像素缓存
+const CACHE_BUDGET_FLOOR: usize = 32 * 1024 * 1024;
 
 /// ROI 重解码触发阈值：每个原始像素占 0.5 个屏幕像素时就值得补细节。
 /// 解码尺寸按窗口自适应后（可能只有原图 1/4），这个阈值必须跟着降低，
@@ -400,7 +400,7 @@ impl ImageViewer {
         let cache_budget = (total_mem as usize / 32)
             .min(avail_mem as usize / 8)
             .clamp(CACHE_BUDGET_FLOOR, CACHE_BUDGET_CAP);
-        let cache_max_entries = (cache_budget / (8 << 20)).clamp(4, 32);
+        let cache_max_entries = (cache_budget / (8 << 20)).clamp(2, 12);
         // 双核机器只留 1 个预取位，避免 4 张齐发把当前图解码挤慢
         let cores = std::thread::available_parallelism()
             .map(|n| n.get())
@@ -643,6 +643,9 @@ impl ImageViewer {
         }
 
         if self.in_flight.contains(&path) {
+            // 这张图可能是预取任务：用户已经导航到它，必须让在途结果
+            // 在完成时直接上屏，而不能把它当作纯缓存预取然后静默返回。
+            self.thumb_gen += 1;
             cx.notify();
             return;
         }
@@ -1147,7 +1150,7 @@ impl ImageViewer {
                                 orientation,
                             },
                         );
-                        if set_current && still_current {
+                        if still_current {
                             if trace_enabled() {
                                 trace(&format!("decode landed: {}x{} {}ms", width, height, decode_ms));
                             }
@@ -1163,7 +1166,7 @@ impl ImageViewer {
                         }
                     }
                     Err(e) => {
-                        if set_current && still_current {
+                        if still_current {
                             let msg = format!("{e:#}");
                             view.error = Some(if is_truncated_jpeg_error(&msg) {
                                 // 数据没走完：多半是文件还在下载/拷贝，或传输中断
