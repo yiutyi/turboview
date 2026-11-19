@@ -2206,21 +2206,19 @@ impl ImageViewer {
         }
     }
 
-    /// 左键抬起：位移小于阈值视为点击 —— 单击下一张；双击不触发任何动作
+    /// 左键抬起只结束拖拽；翻页由 GPUI 的 ClickEvent 处理，
+    /// 不再依赖 MouseDown/MouseUp 必须在同一命中节点成对到达。
     fn on_mouse_up(&mut self, event: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
         if event.button == MouseButton::Left {
-            if let Some((start, _)) = self.drag {
-                let dx = f32::from(event.position.x - start.x);
-                let dy = f32::from(event.position.y - start.y);
-                let is_click = dx.abs() < CLICK_THRESHOLD && dy.abs() < CLICK_THRESHOLD;
-                // 只认单击。双击的第二次抬起必须忽略，否则一次双击会翻两张
-                // （第一次抬起已 nav_next）；更不再用它切换目录树。
-                if is_click && event.click_count < 2 && !self.images.is_empty() {
-                    self.nav_next(cx);
-                }
-            }
             self.drag = None;
             cx.notify();
+        }
+    }
+
+    /// 单击下一张。双击的第二次 ClickEvent 忽略，避免一次双击翻两张。
+    fn on_image_click(&mut self, event: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if event.click_count() == 1 && !self.images.is_empty() {
+            self.nav_next(cx);
         }
     }
 
@@ -2861,6 +2859,7 @@ impl Render for ImageViewer {
             .on_mouse_down(MouseButton::Right, cx.listener(Self::on_mouse_down))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
+            .on_click(cx.listener(Self::on_image_click))
             .on_scroll_wheel(cx.listener(Self::on_scroll_wheel));
 
         if let Some(image) = &self.current {
