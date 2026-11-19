@@ -2159,16 +2159,17 @@ impl ImageViewer {
         }
     }
 
-    /// 左键抬起：位移小于阈值视为点击 —— 单击下一张；双击不触发任何动作
+    /// 左键抬起：位移小于阈值视为一次点击，每次实际点击都翻到下一张。
     fn on_mouse_up(&mut self, event: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
         if event.button == MouseButton::Left {
             if let Some((start, _)) = self.drag {
                 let dx = f32::from(event.position.x - start.x);
                 let dy = f32::from(event.position.y - start.y);
                 let is_click = dx.abs() < CLICK_THRESHOLD && dy.abs() < CLICK_THRESHOLD;
-                // 只认单击。双击的第二次抬起必须忽略，否则一次双击会翻两张
-                // （第一次抬起已 nav_next）；更不再用它切换目录树。
-                if is_click && event.click_count < 2 && !self.images.is_empty() {
+                // 不用 click_count 过滤：它会把快速连续点击中的第 2、3... 次
+                // 当成双击/多击吞掉，用户会感觉左键偶尔失效。每次独立按下-抬起
+                // 都应该导航一次；拖拽仍由位移阈值排除。
+                if is_click && !self.images.is_empty() {
                     self.nav_next(cx);
                 }
             }
