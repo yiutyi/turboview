@@ -90,15 +90,25 @@ fn main() {
     store.sort_ids(&mut ids);
     let sort = elapsed_ms(start);
     let start = Instant::now();
+    let mut index_checksum = 0usize;
+    for i in (0..count).step_by(97) {
+        if let Some(id) = store.id_at(i) {
+            index_checksum = index_checksum.wrapping_add(black_box(id as usize));
+        }
+    }
+    let index_ms = elapsed_ms(start);
+
+    let start = Instant::now();
     let mut checksum = 0usize;
     for i in (0..count).step_by(97) {
         if let Some(path) = store.get(ids[i]) {
             checksum = checksum.wrapping_add(black_box(path.as_os_str().len()));
         }
     }
-    let nav = elapsed_ms(start);
-    println!("PathStore + ID     build {build:9.2} ms · sort {sort:9.2} ms · materialize {nav:9.2} ms · estimated~{:.2} MiB · dirs {}",
+    let materialize_ms = elapsed_ms(start);
+    println!("PathStore + ID     build {build:9.2} ms · sort {sort:9.2} ms · index {index_ms:9.2} ms · materialize {materialize_ms:9.2} ms · estimated~{:.2} MiB · dirs {}",
         bytes as f64 / 1_048_576.0, store.directory_count());
+    black_box(index_checksum);
     black_box(checksum);
 
     println!("\nNote: PathStore sort currently materializes PathBuf values per comparison.");
