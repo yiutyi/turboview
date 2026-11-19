@@ -10,7 +10,7 @@
 
 use std::cmp::Ordering;
 use std::collections::HashMap;
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf, Prefix};
 use std::sync::Arc;
 
@@ -28,7 +28,8 @@ impl PathId {
 #[derive(Clone, Copy, Debug)]
 struct ImageRecord {
     directory: u32,
-    name: RangeU32,
+    /// Range into `name_keys`: `[TAG_NORMAL][WTF-8/raw bytes][0x00]`.
+    /// This doubles as the comparison key and the lossless file-name store.
     name_key: RangeU32,
 }
 
@@ -51,11 +52,12 @@ impl RangeU32 {
 pub struct PathStore {
     directories: Vec<Arc<Path>>,
     directory_ids: HashMap<Arc<Path>, u32>,
-    names: Vec<u16>,
     images: Vec<ImageRecord>,
     /// One encoded component stream per directory (shared across all its images).
     directory_keys: Vec<Vec<u8>>,
-    /// Concatenated sort keys for the trailing file-name component.
+    /// Concatenated sort keys for the trailing file-name component. Each is
+    /// `[TAG_NORMAL][as_encoded_bytes][0x00]`, which is also the lossless
+    /// on-disk byte form used by `get()` — no separate UTF-16 arena is needed.
     name_keys: Vec<u8>,
 }
 
@@ -65,14 +67,14 @@ impl PathStore {
     }
 
     /// Preallocates the image/name arenas when a scan already knows its entry count.
-    pub fn with_capacity(images: usize, name_units: usize, directories: usize) -> Self {
+    /// `name_bytes` is an estimate of total encoded file-name bytes.
+    pub fn with_capacity(images: usize, name_bytes: usize, directories: usize) -> Self {
         Self {
             directories: Vec::with_capacity(directories),
             directory_ids: HashMap::with_capacity(directories),
-            names: Vec::with_capacity(name_units),
             images: Vec::with_capacity(images),
             directory_keys: Vec::with_capacity(directories),
-            name_keys: Vec::with_capacity(name_units * 2),
+            name_keys: Vec::with_capacity(name_bytes),
         }
     }
 
@@ -113,8 +115,8 @@ impl PathStore {
         };
 
         let name = path.file_name().unwrap_or(path.as_os_str());
-        let range = append_os(&mut self.names, name);
-
+        // Encode once into name_keys: this byte form serves both comparison and
+        // lossless get(). No separate UTF-16 arena allocation.
         let key_start = self.name_keys.len() as u32;
         encode_name(&mut self.name_keys, name);
         let name_key = RangeU32 {
@@ -123,18 +125,24 @@ impl PathStore {
         };
 
         let id = PathId(self.images.len() as u32);
-        self.images.push(ImageRecord {
-            directory,
-            name: range,
-            name_key,
-        });
+        self.images.push(ImageRecord { directory, name_key });
         id
     }
 
     pub fn get(&self, id: PathId) -> Option<PathBuf> {
         let record = *self.images.get(id.0 as usize)?;
         let directory = self.directories.get(record.directory as usize)?;
-        let name = decode_os(self.names.get(record.name.as_range())?);
+        let key = self.name_keys.get(record.name_key.as_range())?;
+        // key layout: [TAG_NORMAL][payload][0x00]
+        debug_assert_eq!(key.first(), Some(&TAG_NORMAL));
+        debug_assert_eq!(key.last(), Some(&0));
+        let name = if key.len() >= 2 {
+            // SAFETY: these bytes were produced by `OsStr::as_encoded_bytes()`
+            // in `encode_name`, so they are a valid encoded form on this platform.
+            unsafe { OsStr::from_encoded_bytes_unchecked(&key[1..key.len() - 1]) }
+        } else {
+            OsStr::new("")
+        };
         let mut path = directory.to_path_buf();
         path.push(name);
         Some(path)
@@ -162,8 +170,7 @@ impl PathStore {
     pub fn storage_bytes(&self) -> usize {
         let directory_strings: usize = self.directories.iter().map(|p| p.as_os_str().len()).sum();
         let directory_key_bytes: usize = self.directory_keys.iter().map(Vec::capacity).sum();
-        self.names.capacity() * std::mem::size_of::<u16>()
-            + self.name_keys.capacity()
+        self.name_keys.capacity()
             + directory_key_bytes
             + self.images.capacity() * std::mem::size_of::<ImageRecord>()
             + self.directories.capacity() * std::mem::size_of::<Arc<Path>>()
@@ -284,33 +291,6 @@ fn compare_parts(a_first: &[u8], a_second: &[u8], b_first: &[u8], b_second: &[u8
     a_len.cmp(&b_len)
 }
 
-/// Append directly into the arena: the Windows hot path performs no per-name Vec allocation.
-#[cfg(windows)]
-fn append_os(dst: &mut Vec<u16>, value: &OsStr) -> RangeU32 {
-    use std::os::windows::ffi::OsStrExt;
-    let start = dst.len() as u32;
-    dst.extend(value.encode_wide());
-    RangeU32 { start, len: (dst.len() as u32).wrapping_sub(start) }
-}
-
-#[cfg(not(windows))]
-fn append_os(dst: &mut Vec<u16>, value: &OsStr) -> RangeU32 {
-    let start = dst.len() as u32;
-    dst.extend(value.to_string_lossy().encode_utf16());
-    RangeU32 { start, len: (dst.len() as u32).wrapping_sub(start) }
-}
-
-#[cfg(windows)]
-fn decode_os(value: &[u16]) -> OsString {
-    use std::os::windows::ffi::OsStringExt;
-    OsString::from_wide(value)
-}
-
-#[cfg(not(windows))]
-fn decode_os(value: &[u16]) -> OsString {
-    OsString::from(String::from_utf16_lossy(value))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -380,6 +360,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn preserves_unpaired_utf16_filename_units() {
+        use std::ffi::OsString;
         use std::os::windows::ffi::OsStringExt;
         let odd_name = OsString::from_wide(&[b'x' as u16, 0xD800, b'.' as u16, b'j' as u16]);
         let path = PathBuf::from(r"C:\photos").join(odd_name);
@@ -517,7 +498,8 @@ mod tests {
     #[test]
     #[ignore = "large synthetic memory smoke test"]
     fn million_entry_synthetic_storage_smoke() {
-        let mut store = PathStore::with_capacity(1_000_000, 11_000_000, 1);
+        // 11-byte names + 2 tag/terminator bytes each = ~13 MB of sort keys.
+        let mut store = PathStore::with_capacity(1_000_000, 14_000_000, 1);
         for i in 0..1_000_000u32 {
             let name = format!(r"X:\images\{i:07}.jpg");
             store.insert(Path::new(&name));

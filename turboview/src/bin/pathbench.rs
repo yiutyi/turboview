@@ -79,7 +79,8 @@ fn main() {
 
     // PathStore + compact integer IDs
     let start = Instant::now();
-    let mut store = PathStore::with_capacity(count, count * 16, 4096);
+    // Names are "IMG_NNNNNNNN.jpg" (15 bytes) + 1 tag + 1 terminator = 17 bytes.
+    let mut store = PathStore::with_capacity(count, count * 20, 4096);
     let mut ids = Vec::with_capacity(count);
     for i in 0..count {
         ids.push(store.insert(Path::new(&make_path(i, count))));
