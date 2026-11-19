@@ -95,6 +95,6 @@ layout are not measured.
   does not yet model deep paths or high-cardinality directory layouts.
 
 The current sort-key comparator is an optimization already present in the code;
-the remaining acceptance work is to validate it broadly, correct the navigation
-benchmark, and establish refresh-generation lifetime behavior. Keep the prototype
+the remaining acceptance work is broader path-distribution validation, large-scale
+and real-library measurements, and refresh-generation lifetime testing. Keep the prototype
 isolated from `ImageViewer` until those checks pass.
