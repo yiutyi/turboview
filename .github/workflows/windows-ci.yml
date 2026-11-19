@@ -35,7 +35,7 @@ jobs:
       - name: Add vendored NASM to PATH
         shell: pwsh
         run: |
-          "$env:GITHUB_WORKSPACE\\turboview\\third-party\\nasm\\nasm-2.16.03" >> $env:GITHUB_PATH
+          "$env:GITHUB_WORKSPACE\turboview\third-party\nasm\nasm-2.16.03" >> $env:GITHUB_PATH
 
       - name: Install stable Rust
         uses: dtolnay/rust-toolchain@stable
@@ -80,7 +80,7 @@ jobs:
           $ErrorActionPreference = "Stop"
           $dist = Join-Path $env:RUNNER_TEMP "TurboView-portable"
           New-Item -ItemType Directory -Force -Path $dist | Out-Null
-          $exe = Join-Path $env:GITHUB_WORKSPACE "turboview\\target\\release\\turboview.exe"
+          $exe = Join-Path $env:GITHUB_WORKSPACE "turboview\target\release\turboview.exe"
           if (!(Test-Path $exe)) { throw "Release executable not found: $exe" }
           Copy-Item $exe $dist
           Copy-Item (Join-Path $env:GITHUB_WORKSPACE "README.md") $dist
