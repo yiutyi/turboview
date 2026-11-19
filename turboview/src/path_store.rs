@@ -41,6 +41,16 @@ impl PathStore {
         Self::default()
     }
 
+    /// Preallocates the image/name arenas when a scan already knows its entry count.
+    pub fn with_capacity(images: usize, name_units: usize, directories: usize) -> Self {
+        Self {
+            directories: Vec::with_capacity(directories),
+            directory_ids: HashMap::with_capacity(directories),
+            names: Vec::with_capacity(name_units),
+            images: Vec::with_capacity(images),
+        }
+    }
+
     pub fn len(&self) -> usize {
         self.images.len()
     }
@@ -68,14 +78,11 @@ impl PathStore {
         };
 
         let name = path.file_name().unwrap_or(path.as_os_str());
-        let encoded = encode_os(name);
-        let start = self.names.len() as u32;
-        let len = encoded.len() as u32;
-        self.names.extend_from_slice(&encoded);
+        let range = append_os(&mut self.names, name);
         let id = PathId(self.images.len() as u32);
         self.images.push(ImageRecord {
             directory,
-            name: RangeU32 { start, len },
+            name: range,
         });
         id
     }
@@ -106,23 +113,32 @@ impl PathStore {
         ids.sort_unstable_by(|a, b| self.cmp(*a, *b));
     }
 
-    /// Approximate owned-buffer capacity, useful for comparing storage strategies.
+    /// Approximate heap capacity, including the directory hash table and directory strings.
+    /// Allocator metadata/alignment are implementation-specific and are not included.
     pub fn storage_bytes(&self) -> usize {
+        let directory_strings: usize = self.directories.iter().map(|p| p.as_os_str().len()).sum();
         self.names.capacity() * std::mem::size_of::<u16>()
             + self.images.capacity() * std::mem::size_of::<ImageRecord>()
             + self.directories.capacity() * std::mem::size_of::<Arc<Path>>()
+            + self.directory_ids.capacity() * std::mem::size_of::<(Arc<Path>, u32)>() * 2
+            + directory_strings
     }
 }
 
+/// Append directly into the arena: the Windows hot path performs no per-name Vec allocation.
 #[cfg(windows)]
-fn encode_os(value: &std::ffi::OsStr) -> Vec<u16> {
+fn append_os(dst: &mut Vec<u16>, value: &std::ffi::OsStr) -> RangeU32 {
     use std::os::windows::ffi::OsStrExt;
-    value.encode_wide().collect()
+    let start = dst.len() as u32;
+    dst.extend(value.encode_wide());
+    RangeU32 { start, len: (dst.len() as u32).wrapping_sub(start) }
 }
 
 #[cfg(not(windows))]
-fn encode_os(value: &std::ffi::OsStr) -> Vec<u16> {
-    value.to_string_lossy().encode_utf16().collect()
+fn append_os(dst: &mut Vec<u16>, value: &std::ffi::OsStr) -> RangeU32 {
+    let start = dst.len() as u32;
+    dst.extend(value.to_string_lossy().encode_utf16());
+    RangeU32 { start, len: (dst.len() as u32).wrapping_sub(start) }
 }
 
 #[cfg(windows)]
