@@ -40,6 +40,12 @@ jobs:
       - name: Install stable Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Configure static MSVC runtime
+        shell: pwsh
+        run: |
+          $env:RUSTFLAGS = "-C target-feature=+crt-static"
+          "RUSTFLAGS=$env:RUSTFLAGS" >> $env:GITHUB_ENV
+
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
         with:
@@ -54,7 +60,7 @@ jobs:
           -DWITH_TURBOJPEG=ON
           -DENABLE_SHARED=OFF
           -DENABLE_STATIC=ON
-          -DWITH_CRT_DLL=ON
+          -DWITH_CRT_DLL=OFF
           -DWITH_JAVA=OFF
           -DWITH_FUZZ=OFF
           -DWITH_TOOLS=OFF
@@ -98,8 +104,8 @@ jobs:
           Keep the executable, README.md, CHANGELOG.md and license notices together.
 
           This package is built from the exact Git commit associated with this workflow run.
-          Windows system graphics components and a compatible Microsoft Visual C++ runtime
-          may still be provided by Windows or need to be installed separately.
+          Windows system graphics components are provided by Windows. The C/C++ runtime
+          is statically linked; no separate Visual C++ Redistributable or ICU installation is required.
           "@ | Set-Content -Encoding UTF8 (Join-Path $dist "PORTABLE-README.txt")
           $zip = Join-Path $env:RUNNER_TEMP "TurboView-Windows-x64-portable.zip"
           Compress-Archive -Path (Join-Path $dist "*") -DestinationPath $zip -Force
@@ -122,6 +128,15 @@ jobs:
           }
           if ((Get-Item (Join-Path $verify "turboview.exe")).Length -lt 1MB) {
             throw "Portable executable is unexpectedly small."
+          }
+          # Verify the executable does not depend on optional VC++ or ICU DLLs.
+          $imports = (& dumpbin.exe /nologo /dependents (Join-Path $verify "turboview.exe") 2>&1 | Out-String)
+          if ($LASTEXITCODE -ne 0) { throw "dumpbin dependency inspection failed: $imports" }
+          $forbidden = @("icuuc.dll", "icuin.dll", "icudt*.dll", "msvcp140*.dll", "vcruntime140*.dll", "concrt140.dll")
+          foreach ($dll in $forbidden) {
+            if ($imports -match [regex]::Escape($dll).Replace("\\*", ".*")) {
+              throw "Portable executable still imports a non-system runtime: $dll`n$imports"
+            }
           }
           if ((Get-Item $zip).Length -lt 1MB) {
             throw "Portable ZIP is unexpectedly small."
