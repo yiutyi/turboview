@@ -30,7 +30,7 @@ struct DirNode {
     /// 子树内压缩包总数（含所有后代）
     archive_count: usize,
     /// 子树内按路径序最早的一张图（与全量排序后的顺序一致）
-    first_image: Option<PathBuf>,
+    first_image: Option<Arc<Path>>,
     expanded: bool,
     depth: u32,
 }
@@ -140,6 +140,8 @@ impl DirTree {
             }
         }
         for (parent, (count, first)) in groups {
+            // One shared path allocation per batch-group; every ancestor stores an Arc clone.
+            let first: Arc<Path> = Arc::from(first.as_path().to_path_buf());
             let id = self.ensure_dir(parent);
             let mut cur = Some(id);
             while let Some(c) = cur {
@@ -149,7 +151,7 @@ impl DirTree {
                 } else {
                     node.image_count += count;
                 }
-                if node.first_image.as_ref().is_none_or(|f| first < f) {
+                if node.first_image.as_ref().is_none_or(|f| first.as_ref() < f.as_ref()) {
                     node.first_image = Some(first.clone());
                 }
                 cur = node.parent;
@@ -188,7 +190,7 @@ impl DirTree {
             self.nodes[c].first_image = images[start..]
                 .iter()
                 .find(|p| p.starts_with(&path))
-                .cloned();
+                .map(|p| Arc::from(p.as_path().to_path_buf()));
             cur = self.nodes[c].parent;
         }
         self.dirty = true;
@@ -287,7 +289,7 @@ impl DirTree {
     }
 
     /// 该子树最早一张图的路径（增量维护，O(1) 取出）
-    pub fn first_image(&self, id: usize) -> Option<&PathBuf> {
+    pub fn first_image(&self, id: usize) -> Option<&Arc<Path>> {
         self.nodes[id].first_image.as_ref()
     }
 
