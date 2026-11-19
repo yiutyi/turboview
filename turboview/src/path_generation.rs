@@ -262,15 +262,15 @@ mod tests {
     fn borrowed_parts_and_reused_buffer_match_materialized_path() {
         let manager = PathIndexManager::new();
         let mut build = manager.begin_generation(1, 32, 1);
-        add(&mut build, r"C:\\photos\\sample.jpg");
+        add(&mut build, r"C:\photos\sample.jpg");
         let snapshot = manager.publish(build).unwrap();
         let handle = snapshot.handle_at(0).unwrap();
 
         let parts = snapshot.parts(handle).unwrap();
-        assert_eq!(parts.directory, Path::new(r"C:\\photos"));
+        assert_eq!(parts.directory, Path::new(r"C:\photos"));
         assert_eq!(parts.file_name, std::ffi::OsStr::new("sample.jpg"));
 
-        let mut buffer = PathBuf::from(r"X:\\long\\buffer\\placeholder.bin");
+        let mut buffer = PathBuf::from(r"X:\long\buffer\placeholder.bin");
         assert!(snapshot.get_into(handle, &mut buffer));
         assert_eq!(buffer, PathBuf::from(r"C:\\photos\\sample.jpg"));
     }
