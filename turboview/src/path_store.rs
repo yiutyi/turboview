@@ -63,6 +63,13 @@ impl PathStore {
         self.directories.len()
     }
 
+    /// Returns the stable ID at a dense list position without materializing a path.
+    /// This is the primitive used by an ImageViewer list backed by PathStore.
+    #[inline]
+    pub fn id_at(&self, index: usize) -> Option<PathId> {
+        (index < self.images.len()).then_some(PathId(index as u32))
+    }
+
     /// Adds a path and returns its stable ID. Duplicate paths are allowed as
     /// separate image entries; identical parent directories share one allocation.
     pub fn insert(&mut self, path: &Path) -> PathId {
@@ -232,6 +239,16 @@ mod tests {
 
         let actual_paths: Vec<_> = actual.iter().map(|id| store.get(*id).unwrap()).collect();
         assert_eq!(actual_paths, expected);
+    }
+
+    #[test]
+    fn dense_index_returns_stable_ids_without_path_materialization() {
+        let mut store = PathStore::new();
+        let first = store.insert(Path::new(r"D:\\a\\one.jpg"));
+        let second = store.insert(Path::new(r"D:\\a\\two.jpg"));
+        assert_eq!(store.id_at(0), Some(first));
+        assert_eq!(store.id_at(1), Some(second));
+        assert_eq!(store.id_at(2), None);
     }
 
     #[test]
