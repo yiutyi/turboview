@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 use turboview::path_store::PathStore;
+use turboview::prefix_path_store::PrefixPathStore;
 
 fn make_path(i: usize, count: usize, deep: bool) -> PathBuf {
     let file = (i * 7919) % count.max(1);
@@ -186,6 +187,38 @@ fn main() {
     black_box(traversal_checksum);
     black_box(checksum);
     black_box(full_materialize_checksum);
+
+    // PrefixPathStore v2: intern every directory component under its parent.
+    let prefix_directory_capacity = if deep { count.div_ceil(8) * 6 } else { 4096 * 4 };
+    let start = Instant::now();
+    let mut prefix_store = PrefixPathStore::with_capacity(count, count * 20, prefix_directory_capacity);
+    let mut prefix_ids = Vec::with_capacity(count);
+    for i in 0..count {
+        prefix_ids.push(prefix_store.insert(Path::new(&make_path(i, count, deep))));
+    }
+    let prefix_build = elapsed_ms(start);
+    let prefix_bytes = prefix_store.storage_bytes()
+        + prefix_ids.capacity() * std::mem::size_of_val(&prefix_ids[0]);
+    let start = Instant::now();
+    prefix_store.sort_ids(&mut prefix_ids);
+    let prefix_sort = elapsed_ms(start);
+    let start = Instant::now();
+    let mut prefix_checksum = 0usize;
+    for i in (0..count).step_by(97) {
+        prefix_checksum = prefix_checksum.wrapping_add(black_box(prefix_ids[i].index()));
+    }
+    for id in &prefix_ids {
+        prefix_checksum = prefix_checksum.wrapping_add(black_box(id.index()));
+    }
+    for id in prefix_ids.iter().rev() {
+        prefix_checksum = prefix_checksum.wrapping_add(black_box(id.index()));
+    }
+    let prefix_traversal = elapsed_ms(start);
+    println!("PrefixPathStore v2 build {prefix_build:9.2} ms · sort {prefix_sort:9.2} ms · index+fwd+rev {prefix_traversal:9.2} ms · estimated~{:.2} MiB · dirs {}",
+        prefix_bytes as f64 / 1_048_576.0, prefix_store.directory_count());
+    black_box(prefix_checksum);
+    drop(prefix_store);
+    drop(prefix_ids);
 
     println!("\nNote: PathStore sort compares precomputed byte keys (no PathBuf materialization).");
     println!("Profiles: flat = 4,096 shallow shared directories; deep = six nested components and up to one leaf directory per eight entries.");
