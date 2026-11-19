@@ -2735,7 +2735,7 @@ impl Render for ImageViewer {
             px(0.0)
         };
         let area_w = viewport.width - sb_w;
-        // 状态栏走普通文档流（根 = 纵向 flex：内容行 flex_1 + 状态栏 26px），
+        // 状态栏走普通文档流（根 = 纵向 flex：内容行 flex_1 + 状态栏 30px），
         // 图片区高度 = 视口高 − 状态栏。以前用 absolute + bottom_0 定位状态栏，
         // 在部分环境下整条不渲染，改为文档流后不再依赖视口数学。
         let area_h = viewport.height - px(30.0);
@@ -2932,7 +2932,7 @@ impl Render for ImageViewer {
             (None, Some(err)) => ("解码失败".to_string(), err.clone()),
             (None, None) => (
                 format!("{} 张图片", self.images.len()),
-                "左键下一张 · 右键上一张 · 滚轮翻页 · Ctrl+滚轮缩放 · ESC 全屏 · Del 删除 · Ctrl+C 复制 · Ctrl+Shift+C 路径 · Ctrl+E 定位 · R 随机 · S 幻灯 · B 侧边栏 · F5 刷新 · T 主题 · 0 适应 · 1 原图 · F 快速 · Q 退出 · 支持 zip/7z/rar 压缩包"
+                "左键下一张 · 右键上一张 · 滚轮翻页 · Ctrl+滚轮缩放 · ESC 退出全屏 · Del 删除 · Ctrl+C 复制 · Ctrl+Shift+C 路径 · Ctrl+E 定位 · R 随机 · S 幻灯 · B 侧边栏 · F5 刷新 · T 主题 · 0 适应 · 1 原图 · Shift+F 快速 · Q 退出 · 支持 zip/7z/rar 压缩包"
                     .to_string(),
             ),
         };
@@ -3230,7 +3230,7 @@ impl Render for ImageViewer {
             None
         };
 
-        // 根布局：纵向 flex —— 内容行（flex_1）+ 状态栏（固定 26px）。
+        // 根布局：纵向 flex —— 内容行（flex_1）+ 状态栏（固定 30px）。
         // 状态栏走普通文档流：以前 absolute + bottom_0 时在部分环境下整条不渲染。
         // 注意：必须给显式宽高。size_full()=100% 在此解析不到视口（父容器高度 auto），
         // flex 会整体塌缩；显式 viewport 尺寸后 flex_1 内容行才能拿到剩余高度。
