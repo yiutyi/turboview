@@ -2932,7 +2932,7 @@ impl Render for ImageViewer {
             (None, Some(err)) => ("解码失败".to_string(), err.clone()),
             (None, None) => (
                 format!("{} 张图片", self.images.len()),
-                "左键下一张 · 右键上一张 · 滚轮翻页 · Ctrl+滚轮缩放 · ESC 退出全屏 · Del 删除 · Ctrl+C 复制 · Ctrl+Shift+C 路径 · Ctrl+E 定位 · R 随机 · S 幻灯 · B 侧边栏 · F5 刷新 · T 主题 · 0 适应 · 1 原图 · Shift+F 快速 · Q 退出 · 支持 zip/7z/rar 压缩包"
+                "左键下一张 · 右键上一张 · 滚轮翻页 · Ctrl+滚轮缩放 · ESC 全屏切换 · Del 删除 · Ctrl+C 复制 · Ctrl+Shift+C 路径 · Ctrl+E 定位 · R 随机 · S 幻灯 · B 侧边栏 · F5 刷新 · T 主题 · 0 适应 · 1 原图 · Shift+F 快速 · Q 退出 · 支持 zip/7z/rar 压缩包"
                     .to_string(),
             ),
         };
