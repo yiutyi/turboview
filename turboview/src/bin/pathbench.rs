@@ -75,21 +75,38 @@ fn main() {
     let start = Instant::now();
     let mut checksum = 0usize;
     for i in (0..count).step_by(97) {
-        checksum = checksum.wrapping_add(black_box(paths[i].as_os_str().len()));
+        let path = paths[i].clone();
+        checksum = checksum.wrapping_add(black_box(path.as_os_str().len()));
     }
-    let nav = elapsed_ms(start);
+    let sampled_get = elapsed_ms(start);
+    let start = Instant::now();
+    let mut parts_checksum = 0usize;
+    for path in &paths {
+        parts_checksum = parts_checksum
+            .wrapping_add(black_box(path.parent().map_or(0, |p| p.as_os_str().len())))
+            .wrapping_add(black_box(path.file_name().map_or(0, |n| n.len())));
+    }
+    for path in paths.iter().rev() {
+        parts_checksum = parts_checksum
+            .wrapping_add(black_box(path.parent().map_or(0, |p| p.as_os_str().len())))
+            .wrapping_add(black_box(path.file_name().map_or(0, |n| n.len())));
+    }
+    let parts_traversal = elapsed_ms(start);
     let start = Instant::now();
     let mut forward_checksum = 0usize;
     for path in &paths {
-        forward_checksum = forward_checksum.wrapping_add(black_box(path.as_os_str().len()));
+        let owned = path.clone();
+        forward_checksum = forward_checksum.wrapping_add(black_box(owned.as_os_str().len()));
     }
     for path in paths.iter().rev() {
-        forward_checksum = forward_checksum.wrapping_add(black_box(path.as_os_str().len()));
+        let owned = path.clone();
+        forward_checksum = forward_checksum.wrapping_add(black_box(owned.as_os_str().len()));
     }
     let traversal = elapsed_ms(start);
-    println!("Vec<PathBuf>       build {build:9.2} ms · sort {sort:9.2} ms · indexed {nav:9.2} ms · fwd+rev {traversal:9.2} ms · payload~{:.2} MiB",
+    println!("Vec<PathBuf>       build {build:9.2} ms · sort {sort:9.2} ms · sampled-get {sampled_get:9.2} ms · parts-fwd+rev {parts_traversal:9.2} ms · full-get-fwd+rev {traversal:9.2} ms · payload~{:.2} MiB",
         bytes as f64 / 1_048_576.0);
     black_box(checksum);
+    black_box(parts_checksum);
     black_box(forward_checksum);
     drop(paths);
 
@@ -106,22 +123,38 @@ fn main() {
     let start = Instant::now();
     let mut checksum = 0usize;
     for i in (0..count).step_by(97) {
-        let shared = Arc::clone(&paths[i]);
-        checksum = checksum.wrapping_add(black_box(shared.as_os_str().len()));
+        let owned = paths[i].to_path_buf();
+        checksum = checksum.wrapping_add(black_box(owned.as_os_str().len()));
     }
-    let nav = elapsed_ms(start);
+    let sampled_get = elapsed_ms(start);
+    let start = Instant::now();
+    let mut parts_checksum = 0usize;
+    for path in &paths {
+        parts_checksum = parts_checksum
+            .wrapping_add(black_box(path.parent().map_or(0, |p| p.as_os_str().len())))
+            .wrapping_add(black_box(path.file_name().map_or(0, |n| n.len())));
+    }
+    for path in paths.iter().rev() {
+        parts_checksum = parts_checksum
+            .wrapping_add(black_box(path.parent().map_or(0, |p| p.as_os_str().len())))
+            .wrapping_add(black_box(path.file_name().map_or(0, |n| n.len())));
+    }
+    let parts_traversal = elapsed_ms(start);
     let start = Instant::now();
     let mut forward_checksum = 0usize;
     for path in &paths {
-        forward_checksum = forward_checksum.wrapping_add(black_box(path.as_os_str().len()));
+        let owned = path.to_path_buf();
+        forward_checksum = forward_checksum.wrapping_add(black_box(owned.as_os_str().len()));
     }
     for path in paths.iter().rev() {
-        forward_checksum = forward_checksum.wrapping_add(black_box(path.as_os_str().len()));
+        let owned = path.to_path_buf();
+        forward_checksum = forward_checksum.wrapping_add(black_box(owned.as_os_str().len()));
     }
     let traversal = elapsed_ms(start);
-    println!("Vec<Arc<Path>>     build {build:9.2} ms · sort {sort:9.2} ms · indexed {nav:9.2} ms · fwd+rev {traversal:9.2} ms · payload~{:.2} MiB",
+    println!("Vec<Arc<Path>>     build {build:9.2} ms · sort {sort:9.2} ms · sampled-get {sampled_get:9.2} ms · parts-fwd+rev {parts_traversal:9.2} ms · full-get-fwd+rev {traversal:9.2} ms · payload~{:.2} MiB",
         bytes as f64 / 1_048_576.0);
     black_box(checksum);
+    black_box(parts_checksum);
     black_box(forward_checksum);
     drop(paths);
 
