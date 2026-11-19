@@ -214,9 +214,23 @@ fn main() {
         prefix_checksum = prefix_checksum.wrapping_add(black_box(id.index()));
     }
     let prefix_traversal = elapsed_ms(start);
-    println!("PrefixPathStore v2 build {prefix_build:9.2} ms · sort {prefix_sort:9.2} ms · index+fwd+rev {prefix_traversal:9.2} ms · estimated~{:.2} MiB · dirs {}",
+    let start = Instant::now();
+    let mut prefix_materialize_checksum = 0usize;
+    for id in &prefix_ids {
+        if let Some(path) = prefix_store.get(*id) {
+            prefix_materialize_checksum = prefix_materialize_checksum.wrapping_add(black_box(path.as_os_str().len()));
+        }
+    }
+    for id in prefix_ids.iter().rev() {
+        if let Some(path) = prefix_store.get(*id) {
+            prefix_materialize_checksum = prefix_materialize_checksum.wrapping_add(black_box(path.as_os_str().len()));
+        }
+    }
+    let prefix_materialize = elapsed_ms(start);
+    println!("PrefixPathStore v2 build {prefix_build:9.2} ms · sort {prefix_sort:9.2} ms · index+fwd+rev {prefix_traversal:9.2} ms · full-get-fwd+rev {prefix_materialize:9.2} ms · estimated~{:.2} MiB · dirs {}",
         prefix_bytes as f64 / 1_048_576.0, prefix_store.directory_count());
     black_box(prefix_checksum);
+    black_box(prefix_materialize_checksum);
     drop(prefix_store);
     drop(prefix_ids);
 
