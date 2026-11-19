@@ -1,0 +1,19 @@
+[package]
+name = "turboview-cpu"
+version = "0.1.0"
+edition = "2021"
+description = "TurboView CPU shell - cross-platform, no GPU, no GPUI"
+
+[dependencies]
+anyhow = "1"
+arboard = "3"
+fontdue = "0.9"
+image = { version = "0.25", default-features = false, features = ["png","bmp","gif","webp","tiff","ico","tga","pnm"] }
+softbuffer = "0.4"
+winit = { version = "0.30", features = ["rwh_06"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
