@@ -784,6 +784,8 @@ impl ImageViewer {
         let belongs = |p: &Path| -> bool {
             gone.contains(p) || split_virtual(p).is_some_and(|(a, _)| gone.contains(&a))
         };
+        // 文件被删除时同步移除尚未派发的预取，避免队列继续读失效路径。
+        self.prefetch_queue.cancel_pending(|p| belongs(p));
         let cur = self.current_path().map(Path::to_path_buf);
         let cur_gone = cur.as_ref().is_some_and(|p| belongs(p));
         self.images.retain(|p| !belongs(p));
