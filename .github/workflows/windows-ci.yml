@@ -40,12 +40,6 @@ jobs:
       - name: Install stable Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Configure static MSVC runtime
-        shell: pwsh
-        run: |
-          $env:RUSTFLAGS = "-C target-feature=+crt-static"
-          "RUSTFLAGS=$env:RUSTFLAGS" >> $env:GITHUB_ENV
-
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
         with:
@@ -132,11 +126,9 @@ jobs:
           # Verify the executable does not depend on optional VC++ or ICU DLLs.
           $imports = (& dumpbin.exe /nologo /dependents (Join-Path $verify "turboview.exe") 2>&1 | Out-String)
           if ($LASTEXITCODE -ne 0) { throw "dumpbin dependency inspection failed: $imports" }
-          $forbidden = @("icuuc.dll", "icuin.dll", "icudt*.dll", "msvcp140*.dll", "vcruntime140*.dll", "concrt140.dll")
-          foreach ($dll in $forbidden) {
-            if ($imports -match [regex]::Escape($dll).Replace("\\*", ".*")) {
-              throw "Portable executable still imports a non-system runtime: $dll`n$imports"
-            }
+          $forbiddenRuntime = '(?i)\b(?:icuuc|icuin|icudt\d*|msvcp140(?:_\d+)?|vcruntime140(?:_1)?|concrt140)\.dll\b'
+          if ($imports -match $forbiddenRuntime) {
+            throw "Portable executable still imports an optional ICU or VC++ runtime DLL.`n$imports"
           }
           if ((Get-Item $zip).Length -lt 1MB) {
             throw "Portable ZIP is unexpectedly small."
