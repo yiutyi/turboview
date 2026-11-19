@@ -189,7 +189,11 @@ fn main() {
     black_box(full_materialize_checksum);
 
     // PrefixPathStore v2: intern every directory component under its parent.
-    let prefix_directory_capacity = if deep { count.div_ceil(8) * 6 } else { 4096 * 4 };
+    let prefix_directory_capacity = if deep {
+        count.div_ceil(8) + count.div_ceil(80) + count.div_ceil(800) + count.div_ceil(8_000) + 8
+    } else {
+        4_096 + 4
+    };
     let start = Instant::now();
     let mut prefix_store = PrefixPathStore::with_capacity(count, count * 20, prefix_directory_capacity);
     let mut prefix_ids = Vec::with_capacity(count);
