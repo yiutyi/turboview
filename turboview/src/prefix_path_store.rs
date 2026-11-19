@@ -1,6 +1,7 @@
 //! Prefix-interned path storage prototype (v2).
 use std::cmp::Ordering;
 use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf, Prefix};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -8,13 +9,13 @@ pub struct PrefixPathId(u32);
 impl PrefixPathId { pub fn index(self) -> usize { self.0 as usize } }
 #[derive(Clone, Copy)] struct Range { start: u32, len: u32 }
 impl Range { fn slice(self) -> std::ops::Range<usize> { self.start as usize..self.start as usize + self.len as usize } }
-#[derive(Clone, Copy)] struct Node { parent: u32, bytes: Range, depth: u32 }
+#[derive(Clone, Copy)] struct Node { parent: u32, bytes: Range, raw: Range, depth: u32 }
 #[derive(Clone, Copy)] struct Image { dir: u32, name: Range }
 
 /// Shares each directory component by its parent node, rather than interning whole parents.
 #[derive(Default)]
 pub struct PrefixPathStore {
-    nodes: Vec<Node>, components: Vec<u8>,
+    nodes: Vec<Node>, components: Vec<u8>, raw_components: Vec<u8>,
     intern: HashMap<(u32, u64), u32>,
     collisions: HashMap<(u32, u64), Vec<u32>>,
     images: Vec<Image>, names: Vec<u8>,
@@ -22,8 +23,8 @@ pub struct PrefixPathStore {
 impl PrefixPathStore {
     pub fn with_capacity(images: usize, names: usize, dirs: usize) -> Self {
         let mut nodes = Vec::with_capacity(dirs.saturating_add(1));
-        nodes.push(Node { parent: 0, bytes: Range { start: 0, len: 0 }, depth: 0 });
-        Self { nodes, components: Vec::with_capacity(dirs.saturating_mul(16)),
+        nodes.push(Node { parent: 0, bytes: Range { start: 0, len: 0 }, raw: Range { start: 0, len: 0 }, depth: 0 });
+        Self { nodes, components: Vec::with_capacity(dirs.saturating_mul(16)), raw_components: Vec::with_capacity(dirs.saturating_mul(16)),
             intern: HashMap::with_capacity(dirs), collisions: HashMap::new(),
             images: Vec::with_capacity(images), names: Vec::with_capacity(names) }
     }
@@ -45,8 +46,11 @@ impl PrefixPathStore {
             parent = if let Some(id) = found { id } else {
                 let id = self.nodes.len() as u32; let start = self.components.len() as u32;
                 self.components.extend_from_slice(&key_bytes);
+                let raw_start = self.raw_components.len() as u32;
+                self.raw_components.extend_from_slice(c.as_os_str().as_encoded_bytes());
+                let raw = Range { start: raw_start, len: self.raw_components.len() as u32 - raw_start };
                 let depth = self.nodes[parent as usize].depth + 1;
-                self.nodes.push(Node { parent, bytes: Range { start, len: key_bytes.len() as u32 }, depth });
+                self.nodes.push(Node { parent, bytes: Range { start, len: key_bytes.len() as u32 }, raw, depth });
                 if let Some(first_id) = first { self.collisions.entry(key).or_insert_with(|| vec![first_id]).push(id); }
                 else { self.intern.insert(key, id); } id
             };
@@ -68,8 +72,28 @@ impl PrefixPathStore {
         (da + 1).cmp(&(db + 1))
     }
     pub fn sort_ids(&self, ids: &mut [PrefixPathId]) { ids.sort_unstable_by(|a,b| self.cmp(*a,*b)); }
+    pub fn get(&self, id: PrefixPathId) -> Option<PathBuf> {
+        let image = *self.images.get(id.0 as usize)?;
+        let mut stack = Vec::with_capacity(self.nodes[image.dir as usize].depth as usize);
+        let mut node = image.dir;
+        while node != 0 {
+            stack.push(node);
+            node = self.nodes[node as usize].parent;
+        }
+        let mut path = PathBuf::new();
+        for node in stack.into_iter().rev() {
+            let raw = &self.raw_components[self.nodes[node as usize].raw.slice()];
+            let component = unsafe { OsStr::from_encoded_bytes_unchecked(raw) };
+            path.push(component);
+        }
+        let name = &self.names[image.name.slice()];
+        let payload = &name[1..name.len() - 1];
+        let name = unsafe { OsStr::from_encoded_bytes_unchecked(payload) };
+        path.push(name);
+        Some(path)
+    }
     pub fn storage_bytes(&self) -> usize {
-        self.components.capacity() + self.names.capacity() + self.nodes.capacity() * std::mem::size_of::<Node>()
+        self.components.capacity() + self.raw_components.capacity() + self.names.capacity() + self.nodes.capacity() * std::mem::size_of::<Node>()
         + self.images.capacity() * std::mem::size_of::<Image>()
         + self.intern.capacity() * (std::mem::size_of::<(u32,u64)>() + 4) * 2
         + self.collisions.values().map(|v| v.capacity() * 4).sum::<usize>()
@@ -103,6 +127,7 @@ fn encode_component(dst: &mut Vec<u8>, c: Component<'_>) {
         let mut s = PrefixPathStore::with_capacity(4, 128, 16);
         let ids: Vec<_> = paths.iter().map(|p| s.insert(p)).collect();
         assert!(s.directory_count() < 10);
+        for (id, path) in ids.iter().zip(paths.iter()) { assert_eq!(s.get(*id).unwrap(), *path); }
         let mut actual = ids.clone(); s.sort_ids(&mut actual);
         let mut expected = ids; expected.sort_unstable_by(|a,b| paths[a.0 as usize].cmp(&paths[b.0 as usize]));
         assert_eq!(actual, expected);
