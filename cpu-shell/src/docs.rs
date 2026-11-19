@@ -31,19 +31,122 @@ pub struct FileEntry {
     pub name: String,
 }
 
-pub fn list_images(dir: &Path) -> Vec<FileEntry> {
-    let Ok(rd) = std::fs::read_dir(dir) else {
-        return Vec::new();
-    };
-    let mut out: Vec<FileEntry> = rd
-        .flatten()
-        .filter_map(|e| {
-            let path = e.path();
-            if !path.is_file() || !is_image(&path) {
+/// Windows: one `FindFirstFileExW` pass with `FIND_FIRST_EX_LARGE_FETCH`.
+///
+/// `std::fs::read_dir` + `path.is_file()` costs an extra metadata round-trip
+/// per entry; on a 1.8M-image folder over SMB that is the difference between
+/// seconds and minutes. The directory attribute comes back in the same
+/// buffer here, so nothing is re-stat'ed.
+#[cfg(windows)]
+mod win_list {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::Path;
+
+    const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
+    const FIND_FIRST_EX_LARGE_FETCH: u32 = 0x2;
+
+    #[repr(C)]
+    #[derive(Default)]
+    struct FindData {
+        attrs: u32,
+        ctime: [u32; 2],
+        atime: [u32; 2],
+        wtime: [u32; 2],
+        size_high: u32,
+        size_low: u32,
+        reserved: u32,
+        name: [u16; 260],
+        alt: [u16; 14],
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn FindFirstFileExW(
+            pattern: *const u16,
+            level: u32,
+            data: *mut FindData,
+            search: u32,
+            filter: *const u8,
+            flags: u32,
+        ) -> *mut core::ffi::c_void;
+        fn FindNextFileW(handle: *mut core::ffi::c_void, data: *mut FindData) -> i32;
+        fn FindClose(handle: *mut core::ffi::c_void) -> i32;
+    }
+
+    fn wide_to_string(units: &[u16]) -> String {
+        let end = units.iter().position(|&c| c == 0).unwrap_or(units.len());
+        String::from_utf16_lossy(&units[..end])
+    }
+
+    pub fn names(dir: &Path) -> Option<Vec<String>> {
+        let mut pattern: Vec<u16> = dir.join("*").as_os_str().encode_wide().collect();
+        pattern.push(0);
+        unsafe {
+            let mut fd = FindData::default();
+            // FindExInfoBasic skips the 8.3 short name lookup, which is the
+            // single biggest cost when a directory holds millions of entries.
+            let h = FindFirstFileExW(
+                pattern.as_ptr(),
+                1,
+                &mut fd,
+                0,
+                std::ptr::null(),
+                FIND_FIRST_EX_LARGE_FETCH,
+            );
+            if h.is_null() || h as isize == -1 {
                 return None;
             }
-            let name = e.file_name().to_string_lossy().to_string();
-            Some(FileEntry { path, name })
+            let mut out = Vec::new();
+            loop {
+                if fd.attrs & FILE_ATTRIBUTE_DIRECTORY == 0 {
+                    let name = wide_to_string(&fd.name);
+                    if !name.is_empty() && is_image(&Path::new(&name)) {
+                        out.push(name);
+                    }
+                }
+                if FindNextFileW(h, &mut fd) == 0 {
+                    break;
+                }
+            }
+            FindClose(h);
+            Some(out)
+        }
+    }
+}
+
+pub fn list_images(dir: &Path) -> Vec<FileEntry> {
+    #[cfg(windows)]
+    let names: Vec<String> = match win_list::names(dir) {
+        Some(names) => names,
+        None => Vec::new(),
+    };
+
+    #[cfg(not(windows))]
+    let names: Vec<String> = {
+        let Ok(rd) = std::fs::read_dir(dir) else {
+            return Vec::new();
+        };
+        rd.flatten()
+            .filter_map(|e| {
+                // file_type() reuses the buffer read_dir already filled; no
+                // extra stat per entry.
+                let is_file = e.file_type().map(|t| t.is_file()).unwrap_or(false);
+                let name = e.file_name().to_string_lossy().to_string();
+                if is_file && is_image(&Path::new(&name)) {
+                    Some(name)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    };
+
+    let mut out: Vec<FileEntry> = names
+        .into_iter()
+        .map(|name| FileEntry {
+            path: dir.join(&name),
+            name,
         })
         .collect();
     out.sort_by(|a, b| {

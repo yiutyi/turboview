@@ -47,6 +47,14 @@ const STATUS_H: i32 = 26;
 
 enum UserEvent {
     Exit,
+    /// Background directory scan finished.
+    DirReady {
+        generation: u64,
+        dir: PathBuf,
+        files: Vec<docs::FileEntry>,
+        target: Option<PathBuf>,
+        ms: f64,
+    },
     /// A sharper background decode finished.
     ImageReady {
         generation: u64,
@@ -184,6 +192,8 @@ struct App {
 
     proxy: Option<winit::event_loop::EventLoopProxy<UserEvent>>,
     generation: u64,
+    scan_generation: u64,
+    scan_ms: f64,
     quick_ms: f64,
     sharp_ms: f64,
     sharp: bool,
@@ -224,6 +234,8 @@ impl App {
             last_rebuild_ms: 0.0,
             proxy: None,
             generation: 0,
+            scan_generation: 0,
+            scan_ms: 0.0,
             quick_ms: 0.0,
             sharp_ms: 0.0,
             sharp: false,
@@ -236,21 +248,11 @@ impl App {
 
     fn open_path(&mut self, path: &Path) {
         match docs::classify(path) {
-            docs::SourceKind::Dir => {
-                let files = docs::list_images(path);
-                if files.is_empty() {
-                    self.status_right = "目录里没有图片".into();
-                    return;
-                }
-                self.source = Source::Dir {
-                    dir: path.to_path_buf(),
-                    files,
-                    index: 0,
-                };
-            }
+            docs::SourceKind::Dir => self.start_dir_scan(path.to_path_buf(), None),
             docs::SourceKind::Zip => match ZipBook::open(path) {
                 Ok(book) if !book.names.is_empty() => {
                     self.source = Source::Zip { book, index: 0 };
+                    self.load_current();
                 }
                 Ok(_) => {
                     self.status_right = "压缩包里没有图片".into();
@@ -266,18 +268,56 @@ impl App {
                     .parent()
                     .map(|p| p.to_path_buf())
                     .unwrap_or_else(|| PathBuf::from("."));
-                let files = docs::list_images(&dir);
-                let index = files.iter().position(|f| f.path == *path).unwrap_or(0);
-                self.source = Source::Dir { dir, files, index };
+                self.start_dir_scan(dir, Some(path.to_path_buf()));
             }
         }
-        self.load_current();
+    }
+
+    /// Enumeration runs off-thread so the window never freezes on a folder
+    /// holding millions of files; the first image is decoded the moment the
+    /// listing lands.
+    fn start_dir_scan(&mut self, dir: PathBuf, target: Option<PathBuf>) {
+        self.scan_generation += 1;
+        let generation = self.scan_generation;
+        self.source = Source::Empty;
+        self.rows.clear();
+        self.status_left = dir
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| dir.display().to_string());
+        self.status_mid = "正在扫描目录…".into();
+        self.status_right = "CPU 渲染 · 无 GPU".into();
+        self.dirty = Some(Rect::new(
+            0,
+            0,
+            self.layout.width,
+            self.layout.height,
+        ));
+        if let Some(window) = &self.window {
+            window.request_redraw();
+        }
+        if let Some(proxy) = self.proxy.clone() {
+            std::thread::spawn(move || {
+                let t = Instant::now();
+                let files = docs::list_images(&dir);
+                let ms = t.elapsed().as_secs_f64() * 1000.0;
+                log(&format!("scan {} -> {} files in {:.1} ms", dir.display(), files.len(), ms));
+                let _ = proxy.send_event(UserEvent::DirReady {
+                    generation,
+                    dir,
+                    files,
+                    target,
+                    ms,
+                });
+            });
+        }
     }
 
     fn load_current(&mut self) {
         if self.source.len() == 0 {
             return;
         }
+        let load_t0 = Instant::now();
         self.generation += 1;
         let generation = self.generation;
         let bytes = match self.source.read_bytes() {
@@ -312,6 +352,13 @@ impl App {
                     self.viewer.zoom_pct()
                 );
                 self.dirty = Some(Rect::new(0, 0, self.layout.width, self.layout.height));
+                log(&format!(
+                    "open {} decode {:.1} ms total {:.1} ms scan {:.1} ms",
+                    self.source.current_name(),
+                    self.quick_ms,
+                    load_t0.elapsed().as_secs_f64() * 1000.0,
+                    self.scan_ms
+                ));
                 if let Some(w) = &self.window {
                     let name = self.source.current_name();
                     w.set_title(&format!("{name} — TurboView CPU"));
@@ -692,6 +739,49 @@ impl ApplicationHandler<UserEvent> for App {
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
             UserEvent::Exit => event_loop.exit(),
+            UserEvent::DirReady {
+                generation,
+                dir,
+                files,
+                target,
+                ms,
+            } => {
+                if generation != self.scan_generation {
+                    return; // a newer folder was opened while scanning
+                }
+                self.scan_ms = ms;
+                if files.is_empty() {
+                    self.status_mid = "目录里没有图片".into();
+                    self.dirty = Some(Rect::new(
+                        0,
+                        0,
+                        self.layout.width,
+                        self.layout.height,
+                    ));
+                    if let Some(window) = &self.window {
+                        window.request_redraw();
+                    }
+                    return;
+                }
+                let index = target
+                    .as_ref()
+                    .and_then(|p| files.iter().position(|f| &f.path == p))
+                    .unwrap_or(0);
+                self.source = Source::Dir { dir, files, index };
+                self.refresh_rows();
+                self.load_current();
+                self.refresh_meta();
+                self.status_mid = format!(
+                    "{} 张   ·   {} / {}   ·   {}%",
+                    self.source.len(),
+                    self.source.index() + 1,
+                    self.source.len(),
+                    self.viewer.zoom_pct()
+                );
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
+            }
             UserEvent::ImageReady {
                 generation,
                 bitmap,
@@ -877,6 +967,17 @@ impl ApplicationHandler<UserEvent> for App {
             }
             _ => {}
         }
+    }
+}
+
+/// Opt-in trace log (`TV_LOG=C:\path\tv.log`) for measuring end-to-end opens.
+fn log(msg: &str) {
+    use std::io::Write;
+    let Ok(path) = std::env::var("TV_LOG") else {
+        return;
+    };
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(f, "{msg}");
     }
 }
 
