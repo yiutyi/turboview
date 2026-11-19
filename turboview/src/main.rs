@@ -2299,7 +2299,7 @@ impl ImageViewer {
         };
 
         let header = div()
-            .h(px(28.0))
+            .h(px(32.0))
             .flex_shrink_0()
             .flex()
             .items_center()
@@ -2535,8 +2535,10 @@ impl ImageViewer {
                                     .w_full()
                                     .flex()
                                     .items_center()
-                                    .pl(px(2.0))
+                                    .pl(px(4.0))
                                     .pr(px(6.0))
+                                    .mx(px(3.0))
+                                    .rounded_md()
                                     .text_sm()
                                     .cursor_pointer()
                                     .on_click(cx.listener(
@@ -3109,6 +3111,38 @@ impl Render for ImageViewer {
                 )
                 .into_any_element(),
         );
+        // 全屏按钮：与 F 快捷键共用同一状态，ESC 也可退出。
+        badges.push(
+            div()
+                .id("toggle-fullscreen")
+                .h(px(22.0))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(4.0))
+                .px_1()
+                .text_xs()
+                .text_color(if self.fullscreen { gpui::rgb(0x3B82F6) } else { colors.disabled })
+                .cursor_pointer()
+                .hover(|s| s.opacity(0.72))
+                .child(
+                    img(ImageSource::Render(
+                        self.status_icons[usize::from(self.dark_mode)][4].clone(),
+                    ))
+                    .w(px(15.0))
+                    .h(px(15.0))
+                    .flex_shrink_0(),
+                )
+                .child(if self.fullscreen { "退出全屏" } else { "全屏" })
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _: &MouseDownEvent, _w, cx| {
+                        this.toggle_fullscreen(cx);
+                    }),
+                )
+                .into_any_element(),
+        );
+
         // 最近一次操作反馈
         if let Some(note) = &self.note {
             badges.push(
