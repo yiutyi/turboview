@@ -77,6 +77,7 @@ fn main() {
     for i in (0..count).step_by(97) {
         let path = paths[i].clone();
         let path = black_box(path);
+        black_box(path.as_os_str().as_encoded_bytes());
         checksum = checksum.wrapping_add(black_box(path.as_os_str().len()));
     }
     let sampled_get = elapsed_ms(start);
@@ -98,11 +99,13 @@ fn main() {
     for path in &paths {
         let owned = path.clone();
         let owned = black_box(owned);
+        black_box(owned.as_os_str().as_encoded_bytes());
         forward_checksum = forward_checksum.wrapping_add(black_box(owned.as_os_str().len()));
     }
     for path in paths.iter().rev() {
         let owned = path.clone();
         let owned = black_box(owned);
+        black_box(owned.as_os_str().as_encoded_bytes());
         forward_checksum = forward_checksum.wrapping_add(black_box(owned.as_os_str().len()));
     }
     let traversal = elapsed_ms(start);
@@ -143,6 +146,7 @@ fn main() {
     for i in (0..count).step_by(97) {
         let owned = paths[i].to_path_buf();
         let owned = black_box(owned);
+        black_box(owned.as_os_str().as_encoded_bytes());
         checksum = checksum.wrapping_add(black_box(owned.as_os_str().len()));
     }
     let sampled_get = elapsed_ms(start);
@@ -164,11 +168,13 @@ fn main() {
     for path in &paths {
         let owned = path.to_path_buf();
         let owned = black_box(owned);
+        black_box(owned.as_os_str().as_encoded_bytes());
         forward_checksum = forward_checksum.wrapping_add(black_box(owned.as_os_str().len()));
     }
     for path in paths.iter().rev() {
         let owned = path.to_path_buf();
         let owned = black_box(owned);
+        black_box(owned.as_os_str().as_encoded_bytes());
         forward_checksum = forward_checksum.wrapping_add(black_box(owned.as_os_str().len()));
     }
     let traversal = elapsed_ms(start);
@@ -254,6 +260,7 @@ fn main() {
     for i in (0..count).step_by(97) {
         if let Some(path) = store.get(ids[i]) {
             let path = black_box(path);
+            black_box(path.as_os_str().as_encoded_bytes());
             checksum = checksum.wrapping_add(black_box(path.as_os_str().len()));
         }
     }
@@ -264,6 +271,7 @@ fn main() {
     for id in &ids {
         if let Some(path) = store.get(*id) {
             let path = black_box(path);
+            black_box(path.as_os_str().as_encoded_bytes());
             full_materialize_checksum = full_materialize_checksum
                 .wrapping_add(black_box(path.as_os_str().len()));
         }
@@ -271,6 +279,7 @@ fn main() {
     for id in ids.iter().rev() {
         if let Some(path) = store.get(*id) {
             let path = black_box(path);
+            black_box(path.as_os_str().as_encoded_bytes());
             full_materialize_checksum = full_materialize_checksum
                 .wrapping_add(black_box(path.as_os_str().len()));
         }
@@ -341,11 +350,14 @@ fn main() {
     for id in &prefix_ids {
         if let Some(path) = prefix_store.get(*id) {
             let path = black_box(path);
+            black_box(path.as_os_str().as_encoded_bytes());
             prefix_materialize_checksum = prefix_materialize_checksum.wrapping_add(black_box(path.as_os_str().len()));
         }
     }
     for id in prefix_ids.iter().rev() {
         if let Some(path) = prefix_store.get(*id) {
+            let path = black_box(path);
+            black_box(path.as_os_str().as_encoded_bytes());
             prefix_materialize_checksum = prefix_materialize_checksum.wrapping_add(black_box(path.as_os_str().len()));
         }
     }
