@@ -129,10 +129,23 @@ impl PathStore {
         id
     }
 
-    pub fn get(&self, id: PathId) -> Option<PathBuf> {
-        let record = *self.images.get(id.0 as usize)?;
-        let directory = self.directories.get(record.directory as usize)?;
-        let key = self.name_keys.get(record.name_key.as_range())?;
+    /// Materializes a path into a caller-owned buffer, reusing its allocation.
+    ///
+    /// This is intended for sequential consumers (for example, a single image
+    /// decoder/navigation worker) that need an owned `PathBuf` only temporarily.
+    /// The buffer is unchanged when `id` is invalid.
+    #[inline]
+    pub fn get_into(&self, id: PathId, target: &mut PathBuf) -> bool {
+        let Some(record) = self.images.get(id.0 as usize) else {
+            return false;
+        };
+        let Some(directory) = self.directories.get(record.directory as usize) else {
+            return false;
+        };
+        let Some(key) = self.name_keys.get(record.name_key.as_range()) else {
+            return false;
+        };
+
         // key layout: [TAG_NORMAL][payload][0x00]
         debug_assert_eq!(key.first(), Some(&TAG_NORMAL));
         debug_assert_eq!(key.last(), Some(&0));
@@ -143,9 +156,19 @@ impl PathStore {
         } else {
             OsStr::new("")
         };
-        let mut path = directory.to_path_buf();
-        path.push(name);
-        Some(path)
+
+        // PathBuf::clone_from reuses the destination's capacity when possible.
+        target.clone_from(directory.as_ref());
+        target.push(name);
+        true
+    }
+
+    /// Returns an independently owned path. Use `get_into` for repeated reads
+    /// where one caller-owned buffer can be reused.
+    #[inline]
+    pub fn get(&self, id: PathId) -> Option<PathBuf> {
+        let mut path = PathBuf::new();
+        self.get_into(id, &mut path).then_some(path)
     }
 
     /// Exact `std::path::Path` ordering, computed from precomputed byte sort keys.
@@ -471,6 +494,23 @@ mod tests {
             source.push(PathBuf::from(s));
         }
         assert_same_order(&source);
+    }
+
+    #[test]
+    fn get_into_reuses_buffer_and_preserves_contents_on_invalid_id() {
+        let mut store = PathStore::new();
+        let first = store.insert(Path::new(r"C:\\photos\\one.jpg"));
+        let second = store.insert(Path::new(r"D:\\archive\\nested\\two.png"));
+        let mut buffer = PathBuf::from(r"X:\\an-existing-long-buffer\\placeholder.bin");
+
+        assert!(store.get_into(first, &mut buffer));
+        assert_eq!(buffer, PathBuf::from(r"C:\\photos\\one.jpg"));
+        assert!(store.get_into(second, &mut buffer));
+        assert_eq!(buffer, PathBuf::from(r"D:\\archive\\nested\\two.png"));
+
+        let before = buffer.clone();
+        assert!(!store.get_into(PathId(u32::MAX), &mut buffer));
+        assert_eq!(buffer, before);
     }
 
     #[test]
