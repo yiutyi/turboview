@@ -103,6 +103,29 @@ jobs:
           "@ | Set-Content -Encoding UTF8 (Join-Path $dist "PORTABLE-README.txt")
           $zip = Join-Path $env:RUNNER_TEMP "TurboView-Windows-x64-portable.zip"
           Compress-Archive -Path (Join-Path $dist "*") -DestinationPath $zip -Force
+
+          # Smoke-check the actual archive, not just the staging directory.
+          $verify = Join-Path $env:RUNNER_TEMP "TurboView-portable-verify"
+          Expand-Archive -LiteralPath $zip -DestinationPath $verify -Force
+          $required = @(
+            "turboview.exe",
+            "README.md",
+            "CHANGELOG.md",
+            "LIBJPEG-TURBO-LICENSE.md",
+            "README.ijg",
+            "PORTABLE-README.txt"
+          )
+          foreach ($name in $required) {
+            if (!(Test-Path (Join-Path $verify $name))) {
+              throw "Portable ZIP is missing required file: $name"
+            }
+          }
+          if ((Get-Item (Join-Path $verify "turboview.exe")).Length -lt 1MB) {
+            throw "Portable executable is unexpectedly small."
+          }
+          if ((Get-Item $zip).Length -lt 1MB) {
+            throw "Portable ZIP is unexpectedly small."
+          }
           "PORTABLE_ZIP=$zip" >> $env:GITHUB_OUTPUT
 
       - name: Upload portable Windows package
