@@ -77,8 +77,10 @@ of the runs alongside the output.
 `PathStore::get` returns a newly owned `PathBuf`, which is convenient when the
 caller must retain an independent path. Repeated navigation/decode consumers
 often need only one temporary path at a time. `PathStore::get_into` therefore
-writes into a caller-owned `PathBuf` and uses `clone_from` on the interned
-directory so the destination can reuse its existing capacity.
+writes into a caller-owned `PathBuf`. It copies the interned directory bytes
+directly into the destination's reusable `OsString`, then appends the filename
+with `PathBuf::push`; this avoids a temporary `PathBuf` and retains destination
+capacity across sequential reads.
 
 The benchmark now reports both full forward/reverse `get` and
 `get_into` traversal. This does not eliminate copying path bytes: the OS-facing
