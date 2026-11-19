@@ -118,14 +118,24 @@ jobs:
           Windows system graphics components and a compatible Microsoft Visual C++
           runtime may still be provided by Windows or need to be installed separately.
           '@ | Set-Content -Encoding UTF8 (Join-Path $dist "PORTABLE-README.txt")
-          $zip = Join-Path $env:RUNNER_TEMP "TurboView-Windows-x64-portable.zip"
-          Compress-Archive -Path (Join-Path $dist "*") -DestinationPath $zip -Force
-          "PORTABLE_ZIP=$zip" >> $env:GITHUB_OUTPUT
+          $manifest = @()
+          Get-ChildItem -File -Recurse $dist | ForEach-Object {
+            $relative = $_.FullName.Substring($dist.Length + 1).Replace("\\", "/")
+            $hash = (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLowerInvariant()
+            $manifest += "$hash  $relative"
+          }
+          @"
+          TurboView portable package SHA-256
+          Commit: $env:GITHUB_SHA
+          Workflow run: $env:GITHUB_RUN_ID
+
+          $($manifest -join "`n")
+          "@ | Set-Content -Encoding UTF8 (Join-Path $dist "SHA256SUMS.txt")
 
       - name: Upload portable Windows package
         uses: actions/upload-artifact@v4
         with:
           name: TurboView-Windows-x64-portable
-          path: ${{ runner.temp }}/TurboView-Windows-x64-portable.zip
+          path: ${{ runner.temp }}/TurboView-portable/
           if-no-files-found: error
           retention-days: 30
