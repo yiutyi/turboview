@@ -1917,7 +1917,7 @@ impl ImageViewer {
 
     /// Del：删除当前图片到回收站，然后自动跳到同位置的下一张
     fn on_delete_image(&mut self, _: &DeleteImage, _: &mut Window, cx: &mut Context<Self>) {
-        let Some(path) = self.current_path().cloned() else { return };
+        let Some(path) = self.current_path().map(Path::to_path_buf) else { return };
         // 压缩包内条目没有独立磁盘文件，无法删除
         if let Some((archive, _)) = split_virtual(&path) {
             self.note = Some(format!(
