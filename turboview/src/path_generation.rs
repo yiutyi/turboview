@@ -272,7 +272,7 @@ mod tests {
 
         let mut buffer = PathBuf::from(r"X:\long\buffer\placeholder.bin");
         assert!(snapshot.get_into(handle, &mut buffer));
-        assert_eq!(buffer, PathBuf::from(r"C:\\photos\\sample.jpg"));
+        assert_eq!(buffer, PathBuf::from(r"C:\photos\sample.jpg"));
     }
 
     #[test]
