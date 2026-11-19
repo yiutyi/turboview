@@ -138,6 +138,16 @@ jobs:
           if ($apiImports -match $unsupported1511Apis) {
             throw "Portable executable statically imports APIs unavailable on Windows 10 1511.`n$apiImports"
           }
+          # Inventory known Windows 8/8.1-era imports. These are warnings, not
+          # failures yet: Windows 7 is an aspirational compatibility target and
+          # requires renderer/runtime work beyond the 1511 startup fix.
+          $win7Blockers = '(?i)(?:DCompositionCreateDevice|GetDpiForMonitor|WaitOnAddress|WakeByAddress(?:All|Single)|GetSystemTimePreciseAsFileTime|GetCurrentPackageFullName|RegisterSuspendResumeNotification|UnregisterSuspendResumeNotification|CreateDXGIFactory2)'
+          $win7Hits = [regex]::Matches($apiImports, $win7Blockers) | ForEach-Object { $_.Value } | Sort-Object -Unique
+          if ($win7Hits) {
+            Write-Warning ("Windows 7 compatibility blockers still present: " + ($win7Hits -join ", "))
+          } else {
+            Write-Host "No known Windows 8/8.1 blocker imports detected."
+          }
           if ((Get-Item $zip).Length -lt 1MB) {
             throw "Portable ZIP is unexpectedly small."
           }
