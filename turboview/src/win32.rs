@@ -89,6 +89,42 @@ fn wide(s: &str) -> Vec<u16> {
     OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
 }
 
+/// 读取 Windows 个性化设置中的应用浅色/深色偏好。
+/// AppsUseLightTheme=0 表示深色，1 表示浅色；读取失败时安全回退浅色。
+#[link(name = "advapi32")]
+unsafe extern "system" {
+    fn RegGetValueW(
+        hkey: *mut core::ffi::c_void,
+        lpSubKey: *const u16,
+        lpValue: *const u16,
+        dwFlags: u32,
+        pdwType: *mut u32,
+        pvData: *mut core::ffi::c_void,
+        pcbData: *mut u32,
+    ) -> i32;
+}
+
+pub fn system_prefers_dark_mode() -> bool {
+    const HKEY_CURRENT_USER: isize = -2147483647;
+    const RRF_RT_REG_DWORD: u32 = 0x0000_0010;
+    let subkey = wide("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize");
+    let value_name = wide("AppsUseLightTheme");
+    let mut value: u32 = 1;
+    let mut size = std::mem::size_of::<u32>() as u32;
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER as *mut core::ffi::c_void,
+            subkey.as_ptr(),
+            value_name.as_ptr(),
+            RRF_RT_REG_DWORD,
+            std::ptr::null_mut(),
+            (&mut value as *mut u32).cast(),
+            &mut size,
+        )
+    };
+    status == 0 && value == 0
+}
+
 /// 伪全屏切换：最大化 ⇄ 还原（保留标题栏）
 pub fn toggle_maximize(title: &str) {
     unsafe {
