@@ -110,7 +110,7 @@ impl DirTree {
             let key = &self.nodes[id].name_lower;
             let pos = self.nodes[p]
                 .children
-                .partition_point(|&c| self.nodes[c].name_lower.as_str() < key.as_str());
+                .partition_point(|&c| self.nodes[c].name_lower.as_ref() < key.as_ref());
             self.nodes[p].children.insert(pos, id);
         }
         self.dirty = true;
