@@ -46,3 +46,27 @@ are not ordinary filesystem children, without silently changing their order.
 
 No main-viewer integration should happen until the prototype demonstrates a
 material memory reduction without a meaningful navigation regression.
+
+
+## Repeatable benchmark
+
+Run from `turboview/` on the target Windows machine (release mode):
+
+```powershell
+cargo run --release --bin pathbench -- 100000
+cargo run --release --bin pathbench -- 1000000
+```
+
+The benchmark reports construction, sorting, indexed navigation/materialization,
+and an approximate owned-heap estimate for `Vec<PathBuf>`, `Vec<Arc<Path>`,
+and `PathStore + PathId`. Run all three on the same local SSD/library and
+repeat at least three times. The synthetic dataset uses 4,096 shared directories;
+it is intended for representation comparisons, not to predict every real folder
+distribution. Record the Windows build, CPU model, RAM, storage type, and median
+of the runs alongside the output.
+
+The Windows insertion path now appends UTF-16 filename units directly into the
+arena (no temporary per-filename `Vec<u16>`). The storage estimate includes the
+directory hash table and directory string payload, but excludes allocator
+metadata/alignment; treat it as an estimate rather than RSS. A Windows-only
+test covers unpaired UTF-16 code units.
