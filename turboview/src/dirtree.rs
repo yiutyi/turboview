@@ -9,14 +9,15 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 struct DirNode {
     /// 显示名（最后一段路径；盘根为 "Z:\" 这类完整形式）
-    name: String,
+    name: Arc<str>,
     /// name 的小写缓存：children 插入排序时避免每次比较都分配新 String
-    name_lower: String,
-    /// 完整路径（惰性展开时按需扫描该层用）
-    path: PathBuf,
+    name_lower: Arc<str>,
+    /// 完整路径（惰性展开时按需扫描该层用）；与路径索引共享同一分配
+    path: Arc<Path>,
     parent: Option<usize>,
     /// 子目录，按名字（忽略大小写）有序
     children: Vec<usize>,
@@ -29,7 +30,7 @@ struct DirNode {
     /// 子树内压缩包总数（含所有后代）
     archive_count: usize,
     /// 子树内按路径序最早的一张图（与全量排序后的顺序一致）
-    first_image: Option<PathBuf>,
+    first_image: Option<Arc<Path>>,
     expanded: bool,
     depth: u32,
 }
@@ -39,7 +40,7 @@ struct DirNode {
 pub struct DirRow {
     pub id: usize,
     pub depth: u32,
-    pub name: String,
+    pub name: Arc<str>,
     pub count: usize,
     /// 子树内压缩包数（为 0 时不显示）
     pub archives: usize,
@@ -57,7 +58,7 @@ pub struct DirRow {
 #[derive(Default)]
 pub struct DirTree {
     nodes: Vec<DirNode>,
-    by_path: HashMap<PathBuf, usize>,
+    by_path: HashMap<Arc<Path>, usize>,
     rows: Vec<DirRow>,
     /// 节点 id → 可见行下标，rows 重建时同步填充；避免每次定位都全表扫描
     row_index_by_id: HashMap<usize, usize>,
@@ -86,13 +87,14 @@ impl DirTree {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| path.to_string_lossy().into_owned());
-        let name_lower = name.to_lowercase();
+        let name_lower: Arc<str> = Arc::from(name.to_lowercase());
+        let name: Arc<str> = Arc::from(name);
         let depth = parent_id.map_or(0, |p| self.nodes[p].depth + 1);
         let id = self.nodes.len();
         self.nodes.push(DirNode {
             name,
             name_lower,
-            path: path.to_path_buf(),
+            path: Arc::from(path.to_path_buf()),
             parent: parent_id,
             children: Vec::new(),
             scanned: false,
@@ -103,12 +105,12 @@ impl DirTree {
             expanded: false,
             depth,
         });
-        self.by_path.insert(path.to_path_buf(), id);
+        self.by_path.insert(self.nodes[id].path.clone(), id);
         if let Some(p) = parent_id {
             let key = &self.nodes[id].name_lower;
             let pos = self.nodes[p]
                 .children
-                .partition_point(|&c| self.nodes[c].name_lower.as_str() < key.as_str());
+                .partition_point(|&c| self.nodes[c].name_lower.as_ref() < key.as_ref());
             self.nodes[p].children.insert(pos, id);
         }
         self.dirty = true;
@@ -138,6 +140,8 @@ impl DirTree {
             }
         }
         for (parent, (count, first)) in groups {
+            // One shared path allocation per batch-group; every ancestor stores an Arc clone.
+            let first: Arc<Path> = Arc::from(first.as_path().to_path_buf());
             let id = self.ensure_dir(parent);
             let mut cur = Some(id);
             while let Some(c) = cur {
@@ -147,7 +151,7 @@ impl DirTree {
                 } else {
                     node.image_count += count;
                 }
-                if node.first_image.as_ref().is_none_or(|f| first < f) {
+                if node.first_image.as_ref().is_none_or(|f| first.as_ref() < f.as_ref()) {
                     node.first_image = Some(first.clone());
                 }
                 cur = node.parent;
@@ -182,11 +186,11 @@ impl DirTree {
             let path = self.nodes[c].path.clone();
             // images 全量有序：二分定位到前缀起点后顺序扫描，命中即停。
             // 原实现对每个祖先线性 find，几十万张图 × 深度 = 百万级 starts_with。
-            let start = images.partition_point(|p| p.as_path() < path.as_path());
+            let start = images.partition_point(|p| p.as_path() < path.as_ref());
             self.nodes[c].first_image = images[start..]
                 .iter()
                 .find(|p| p.starts_with(&path))
-                .cloned();
+                .map(|p| Arc::from(p.as_path().to_path_buf()));
             cur = self.nodes[c].parent;
         }
         self.dirty = true;
@@ -225,7 +229,7 @@ impl DirTree {
         self.nodes
             .iter()
             .find(|n| n.parent.is_none())
-            .map(|n| n.path.clone())
+            .map(|n| n.path.to_path_buf())
     }
 
     /// 全部折叠：根节点保持展开（否则整棵树只剩一行、看不到任何子目录），
@@ -285,7 +289,7 @@ impl DirTree {
     }
 
     /// 该子树最早一张图的路径（增量维护，O(1) 取出）
-    pub fn first_image(&self, id: usize) -> Option<&PathBuf> {
+    pub fn first_image(&self, id: usize) -> Option<&Arc<Path>> {
         self.nodes[id].first_image.as_ref()
     }
 
