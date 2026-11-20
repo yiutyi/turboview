@@ -349,6 +349,8 @@ struct ImageViewer {
     roi_gen: u64,
     /// 是否有 ROI 解码在途（在途时只更新 roi_wanted，完成后重评）
     roi_inflight: bool,
+    /// 原生 ROI 解码不可中断；跨图时保持 busy，避免新旧大块解码重叠。
+    roi_worker_busy: bool,
     /// 状态栏操作反馈（复制/删除等），切图时清除
     note: Option<String>,
     /// 压缩包浏览信息（"📦 包名 › N 张"），跟随当前图：在包内才显示
@@ -467,6 +469,7 @@ impl ImageViewer {
             roi_wanted: None,
             roi_gen: 0,
             roi_inflight: false,
+            roi_worker_busy: false,
             note: None,
             archive_info: None,
             archive_expanded: HashSet::new(),
@@ -1929,7 +1932,7 @@ impl ImageViewer {
 
     /// 派发一次 ROI 解码（背景线程 → 150ms 防抖 → 解码 → 代际校验 → 上屏）
     fn roi_kick(&mut self, cx: &mut Context<Self>) {
-        if self.roi_inflight {
+        if self.roi_inflight || self.roi_worker_busy {
             return;
         }
         let Some(rect) = self.roi_wanted.clone() else { return };
@@ -1940,6 +1943,7 @@ impl ImageViewer {
         }
         let Some(cur) = self.current.as_ref() else { return };
         self.roi_inflight = true;
+        self.roi_worker_busy = true;
         self.roi_gen += 1;
         let gen_id = self.roi_gen;
         let orientation = cur.orientation;
@@ -1957,9 +1961,14 @@ impl ImageViewer {
                 })
                 .await;
             view.update(cx, |view, cx| {
-                // 代际已变：这次结果属于上一张图。既不落地，也不能复位
-                // roi_inflight —— 那会把新图已在途的解码标志清掉。
+                // 原生解码不可中断。无论结果是否过期，都先释放唯一 ROI
+                // worker；若期间视口已变化，则立即交接给最新的期望区域。
+                view.roi_worker_busy = false;
                 if view.roi_gen != gen_id {
+                    if view.roi_wanted.is_some() {
+                        view.roi_kick(cx);
+                    }
+                    cx.notify();
                     return;
                 }
                 view.roi_inflight = false;
