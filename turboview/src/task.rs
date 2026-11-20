@@ -185,6 +185,8 @@ mod tests {
         assert_eq!(registry.cancel_where(|key| *key == "a.jpg"), 1);
         assert!(a.cancellation.is_cancelled());
         assert!(b.cancellation.is_active());
+        assert_eq!(registry.len(), 2);
+        assert!(registry.finish(&"a.jpg", a.id));
         assert_eq!(registry.len(), 1);
     }
 }
