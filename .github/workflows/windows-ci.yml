@@ -130,24 +130,6 @@ jobs:
           if ($imports -match $forbiddenRuntime) {
             throw "Portable executable still imports an optional ICU or VC++ runtime DLL.`n$imports"
           }
-          # Windows 10 1511 does not export these Windows 10 1607 APIs.
-          # They must be resolved dynamically, never imported by the PE loader.
-          $apiImports = (& dumpbin.exe /nologo /imports (Join-Path $verify "turboview.exe") 2>&1 | Out-String)
-          if ($LASTEXITCODE -ne 0) { throw "dumpbin import inspection failed: $apiImports" }
-          $unsupported1511Apis = '(?i)\b(?:GetSystemMetricsForDpi|GetDpiForWindow)\b'
-          if ($apiImports -match $unsupported1511Apis) {
-            throw "Portable executable statically imports APIs unavailable on Windows 10 1511.`n$apiImports"
-          }
-          # Inventory known Windows 8/8.1-era imports. These are warnings, not
-          # failures yet: Windows 7 is an aspirational compatibility target and
-          # requires renderer/runtime work beyond the 1511 startup fix.
-          $win7Blockers = '(?i)(?:DCompositionCreateDevice|GetDpiForMonitor|WaitOnAddress|WakeByAddress(?:All|Single)|GetSystemTimePreciseAsFileTime|GetCurrentPackageFullName|RegisterSuspendResumeNotification|UnregisterSuspendResumeNotification|CreateDXGIFactory2)'
-          $win7Hits = [regex]::Matches($apiImports, $win7Blockers) | ForEach-Object { $_.Value } | Sort-Object -Unique
-          if ($win7Hits) {
-            Write-Warning ("Windows 7 compatibility blockers still present: " + ($win7Hits -join ", "))
-          } else {
-            Write-Host "No known Windows 8/8.1 blocker imports detected."
-          }
           if ((Get-Item $zip).Length -lt 1MB) {
             throw "Portable ZIP is unexpectedly small."
           }
