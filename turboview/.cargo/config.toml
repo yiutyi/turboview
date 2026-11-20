@@ -1,3 +1,0 @@
-# Keep Windows portable builds independent of the machine's VC++ runtime installation.
-[target.x86_64-pc-windows-msvc]
-rustflags = ["-C", "target-feature=+crt-static"]
