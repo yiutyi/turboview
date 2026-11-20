@@ -1,3 +1,16 @@
+> **ARCHIVED / 已归档**
+>
+> This repository is no longer maintained. Active development continues in
+> [yiutyi/libjpeg-turbo](https://github.com/yiutyi/libjpeg-turbo) on the
+> [`turboview`](https://github.com/yiutyi/libjpeg-turbo/tree/turboview) branch, which bundles
+> TurboView on top of the latest libjpeg-turbo. Get the latest Windows build from
+> [Releases](https://github.com/yiutyi/libjpeg-turbo/releases). Existing releases here remain for reference only.
+>
+> 本仓库已停止维护。活跃开发已迁移到
+> [yiutyi/libjpeg-turbo](https://github.com/yiutyi/libjpeg-turbo) 的
+> [`turboview`](https://github.com/yiutyi/libjpeg-turbo/tree/turboview) 分支（TurboView + 最新 libjpeg-turbo）。
+> 最新版本请从 [Releases](https://github.com/yiutyi/libjpeg-turbo/releases) 下载。本仓库现有 release 仅作存档保留。
+
 Background
 ==========
 
