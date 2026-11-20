@@ -563,6 +563,29 @@ mod tests {
     }
 
     #[test]
+    fn reconcile_subdirs_releases_removed_subtree_and_keeps_ids_safe() {
+        let mut t = DirTree::new();
+        let root_path = p(&["root"]);
+        let child_path = p(&["root", "gone"]);
+        let grandchild_path = p(&["root", "gone", "nested"]);
+        let root = t.ensure_dir(&root_path);
+        t.set_expanded(root, true);
+        let child = t.ensure_dir(&child_path);
+        let grandchild = t.ensure_dir(&grandchild_path);
+        t.add_images(&[p(&["root", "gone", "nested", "1.jpg"])]);
+        let removed = t.reconcile_subdirs(&root_path, &[]);
+        assert_eq!(removed, vec![child_path.clone()]);
+        assert!(t.lookup(&child_path).is_none());
+        assert!(t.lookup(&grandchild_path).is_none());
+        assert!(!t.is_alive(child));
+        assert!(!t.is_alive(grandchild));
+        assert!(t.nodes[child].children.is_empty());
+        assert!(t.nodes[child].path.as_os_str().is_empty());
+        assert_eq!(t.nodes[root].children.len(), 0);
+        assert_eq!(t.rows().len(), 1);
+    }
+
+    #[test]
     fn fmt_count_groups_by_three() {
         assert_eq!(fmt_count(0), "0");
         assert_eq!(fmt_count(999), "999");
