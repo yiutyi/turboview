@@ -68,7 +68,7 @@ actions!(
 );
 
 /// 侧边栏宽度（像素）
-const SIDEBAR_WIDTH: f32 = 280.0;
+const SIDEBAR_WIDTH: f32 = 300.0;
 /// 侧边栏行高
 const ROW_HEIGHT: f32 = 28.0;
 /// 目录树每级缩进宽度
@@ -2677,13 +2677,13 @@ impl ImageViewer {
             .flex_shrink_0()
             .flex()
             .flex_col()
-            .py(px(2.0))
+            .py(px(4.0))
             .border_b_1()
             .border_color(colors.border)
             .child(
                 div()
                     .id("tv-places-head")
-                    .h(px(22.0))
+                    .h(px(26.0))
                     .w_full()
                     .flex()
                     .items_center()
@@ -2706,29 +2706,41 @@ impl ImageViewer {
         }
 
         for (ix, (kind, label, path)) in entries.into_iter().enumerate() {
+            let place_icon: AnyElement = if kind == 1 {
+                div()
+                    .w(px(16.0))
+                    .h(px(16.0))
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_color(colors.disabled)
+                    .child("▰")
+                    .into_any_element()
+            } else {
+                img(ImageSource::Render(
+                    self.folder_icons[(self.dark_mode as usize)][0].clone(),
+                ))
+                .w(px(14.0))
+                .h(px(14.0))
+                .flex_shrink_0()
+                .into_any_element()
+            };
             let row = div()
                 .id(("tv-place", ix))
-                .h(px(20.0))
+                .h(px(24.0))
                 .w_full()
                 .flex()
                 .items_center()
-                .gap(px(5.0))
-                .px_2()
+                .gap(px(7.0))
+                .px_3()
                 .text_sm()
                 .cursor_pointer()
                 .hover(move |s| s.bg(hover_bg))
                 .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
                     this.open_root(path.clone(), cx);
                 }))
-                .child(
-                    div()
-                        .w(px(16.0))
-                        .h_full()
-                        .flex_shrink_0()
-                        .flex()
-                        .items_center()
-                        .child(if kind == 1 { "▰" } else { "▱" }),
-                )
+                .child(place_icon)
                 .child(
                     div()
                         .flex_1()
