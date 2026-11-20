@@ -1028,9 +1028,17 @@ impl ImageViewer {
     /// 并发有空位时补发排队中的预取任务
     fn pump_prefetch_queue(&mut self, cx: &mut Context<Self>) {
         while self.in_flight.len() < self.max_decode_tasks {
-            let Some(next) = self.prefetch_queue.pop_pending() else {
+            let Some((next, priority)) = self.prefetch_queue.pop_pending_with_priority() else {
                 break;
             };
+            // Keep one worker slot reserved for a newly selected image. A queued
+            // Current task may use it; Prefetch work may not.
+            if priority == TaskPriority::Prefetch
+                && self.in_flight.len() >= self.max_prefetch_tasks
+            {
+                self.prefetch_queue.schedule(next, priority);
+                break;
+            }
             if self.cache.iter().any(|(p, _)| *p == next) || self.in_flight.contains(&next) {
                 continue;
             }
