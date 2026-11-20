@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.1
+
+- Restore immediate decoding for the current image instead of queuing it behind a global decode cap; page turns respond without waiting for a prefetch worker.
+- Count only prefetch work against the prefetch concurrency limit, decoupled from the current image.
+- Keep nearby prefetch entries on navigation rather than clearing the whole pending queue.
+- Clear in-flight and active task state on root change and fast-mode toggle; cancellation alone left decode slots occupied.
+- Replace serialized ROI decoding with latest-wins requests and a debounced generation check.
+- Fix stale completions after a full state reset by adding a real registry clear.
+
 ## 0.2.0
 
 - Remove the Windows GPUI jump-list parser's ICU DLL dependency by using the equivalent bounded UTF-16 terminator scan.
