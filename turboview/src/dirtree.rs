@@ -12,6 +12,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 struct DirNode {
+    /// Retained arena slot keeps outstanding async node IDs stable.
+    alive: bool,
     /// 显示名（最后一段路径；盘根为 "Z:\" 这类完整形式）
     name: Arc<str>,
     /// name 的小写缓存：children 插入排序时避免每次比较都分配新 String
@@ -92,6 +94,7 @@ impl DirTree {
         let depth = parent_id.map_or(0, |p| self.nodes[p].depth + 1);
         let id = self.nodes.len();
         self.nodes.push(DirNode {
+            alive: true,
             name,
             name_lower,
             path: Arc::from(path.to_path_buf()),
@@ -187,10 +190,12 @@ impl DirTree {
             // images 全量有序：二分定位到前缀起点后顺序扫描，命中即停。
             // 原实现对每个祖先线性 find，几十万张图 × 深度 = 百万级 starts_with。
             let start = images.partition_point(|p| p.as_ref() < path.as_ref());
-            self.nodes[c].first_image = images[start..]
-                .iter()
-                .find(|p| p.starts_with(&path))
-                .map(|p| Arc::from((*p).as_ref().to_path_buf()));
+            // 后代在有序列表里连续：起点不是本目录后代 ⇒ 整支为空，无需线性扫描。
+            // 直接克隆调用方的 Arc：每条祖先链零路径分配。
+            self.nodes[c].first_image = images
+                .get(start)
+                .filter(|p| p.starts_with(&path))
+                .cloned();
             cur = self.nodes[c].parent;
         }
         self.dirty = true;
@@ -228,7 +233,7 @@ impl DirTree {
     pub fn root_path(&self) -> Option<PathBuf> {
         self.nodes
             .iter()
-            .find(|n| n.parent.is_none())
+            .find(|n| n.alive && n.parent.is_none())
             .map(|n| n.path.to_path_buf())
     }
 
@@ -275,10 +280,73 @@ impl DirTree {
 
     /// 标记本层正在后台扫描（结果落地后置回 false）
     pub fn set_loading(&mut self, id: usize, v: bool) {
+        if !self.nodes.get(id).is_some_and(|n| n.alive) {
+            return;
+        }
         if self.nodes[id].loading != v {
             self.nodes[id].loading = v;
             self.dirty = true;
         }
+    }
+
+    /// Reconcile a scanned directory's immediate children.
+    /// Removed subtrees release path/name/child allocations while arena IDs
+    /// remain stable for asynchronous callbacks that may still hold them.
+    pub fn reconcile_subdirs(&mut self, parent_path: &Path, subdirs: &[PathBuf]) -> Vec<PathBuf> {
+        let Some(&parent_id) = self.by_path.get(parent_path) else {
+            return Vec::new();
+        };
+        let desired: std::collections::HashSet<&Path> =
+            subdirs.iter().map(PathBuf::as_path).collect();
+        let stale: Vec<usize> = self.nodes[parent_id]
+            .children
+            .iter()
+            .copied()
+            .filter(|&id| self.nodes[id].alive && !desired.contains(self.nodes[id].path.as_ref()))
+            .collect();
+        let mut removed_roots = Vec::with_capacity(stale.len());
+        for root in stale {
+            removed_roots.push(self.nodes[root].path.to_path_buf());
+            let mut stack = vec![root];
+            while let Some(id) = stack.pop() {
+                if !self.nodes[id].alive {
+                    continue;
+                }
+                stack.extend(self.nodes[id].children.iter().copied());
+                let path = self.nodes[id].path.clone();
+                self.by_path.remove(path.as_ref());
+                let node = &mut self.nodes[id];
+                node.alive = false;
+                node.name = Arc::from("");
+                node.name_lower = Arc::from("");
+                node.path = Arc::from(PathBuf::new());
+                node.parent = None;
+                node.children = Vec::new();
+                node.scanned = false;
+                node.loading = false;
+                node.image_count = 0;
+                node.archive_count = 0;
+                node.first_image = None;
+                node.expanded = false;
+            }
+        }
+        if self.by_path.len().saturating_mul(2) < self.by_path.capacity() {
+            self.by_path.shrink_to_fit();
+        }
+        let alive: Vec<bool> = self.nodes.iter().map(|node| node.alive).collect();
+        self.nodes[parent_id].children.retain(|&id| alive[id]);
+        let node_count_before_add = self.nodes.len();
+        for path in subdirs {
+            self.ensure_dir(path);
+        }
+        if !removed_roots.is_empty() || self.nodes.len() != node_count_before_add {
+            self.dirty = true;
+        }
+        removed_roots
+    }
+
+    pub fn is_alive(&self, id: usize) -> bool {
+        self.nodes.get(id).is_some_and(|node| node.alive)
     }
 
     /// 把一层扫描发现的子目录挂到 `parent` 下（ensure_dir 自动按名序插入）
@@ -299,7 +367,7 @@ impl DirTree {
             self.rows.clear();
             self.row_index_by_id.clear();
             let roots: Vec<usize> = (0..self.nodes.len())
-                .filter(|&i| self.nodes[i].parent.is_none())
+                .filter(|&i| self.nodes[i].alive && self.nodes[i].parent.is_none())
                 .collect();
             let root_count = roots.len();
             for (i, r) in roots.into_iter().enumerate() {
@@ -311,6 +379,9 @@ impl DirTree {
     }
 
     fn push_visible(&mut self, id: usize, last_flags: u64) {
+        if !self.nodes[id].alive {
+            return;
+        }
         let (name, depth, expanded, has_children, count, scanned, loading, archives) = {
             let n = &self.nodes[id];
             (
@@ -349,6 +420,9 @@ impl DirTree {
             // 用索引遍历，避免克隆整棵子树 children（大目录下每帧省一次分配）
             for i in 0..child_count {
                 let c = self.nodes[id].children[i];
+                if !self.nodes[c].alive {
+                    continue;
+                }
                 let flags = if i + 1 == child_count {
                     prefix | child_bit
                 } else {
@@ -372,4 +446,154 @@ pub fn fmt_count(n: usize) -> String {
         out.push(*b as char);
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 跨平台构造绝对路径：Windows 用 C:\，其余用 /
+    fn p(parts: &[&str]) -> PathBuf {
+        let mut b = PathBuf::from(if cfg!(windows) { "C:\\" } else { "/" });
+        for s in parts {
+            b.push(s);
+        }
+        b
+    }
+
+    fn imgs(list: &[&[&str]]) -> Vec<Arc<Path>> {
+        let mut v: Vec<Arc<Path>> = list.iter().map(|s| Arc::from(p(s))).collect();
+        v.sort();
+        v
+    }
+
+    /// 回归：子树内没有图片、但排序上更靠后的兄弟目录有图片时，
+    /// 必须返回 None（旧实现在此处会扫完整段尾部）。
+    #[test]
+    fn empty_subtree_stops_immediately() {
+        let mut t = DirTree::new();
+        let empty = t.ensure_dir(&p(&["root", "aaa"]));
+        let images = imgs(&[&["root", "zzz", "1.jpg"], &["root", "zzz", "2.jpg"]]);
+        t.recompute_first_from(empty, &images);
+        assert!(t.first_image(empty).is_none());
+        let root = t.lookup(&p(&["root"])).unwrap();
+        assert_eq!(t.first_image(root).unwrap().as_ref(), images[0].as_ref());
+    }
+
+    /// first_image 必须与源列表共享同一份路径分配（零拷贝）。
+    #[test]
+    fn recompute_shares_arc_with_source_list() {
+        let mut t = DirTree::new();
+        let a = t.ensure_dir(&p(&["root", "a"]));
+        let images = imgs(&[&["root", "a", "1.jpg"], &["root", "a", "2.jpg"]]);
+        t.recompute_first_from(a, &images);
+        let root = t.lookup(&p(&["root"])).unwrap();
+        assert!(Arc::ptr_eq(t.first_image(a).unwrap(), &images[0]));
+        assert!(Arc::ptr_eq(t.first_image(root).unwrap(), &images[0]));
+    }
+
+    /// 分批汇入与一次性汇入必须得到同样的计数与 first_image。
+    /// 注意：add_paths 用 HashMap 分组，节点创建顺序不确定，只能按路径比对。
+    #[test]
+    fn batching_matches_one_shot() {
+        let batch: Vec<PathBuf> = vec![
+            p(&["root", "a", "2.jpg"]),
+            p(&["root", "a", "1.jpg"]),
+            p(&["root", "b", "9.jpg"]),
+        ];
+        let mut a = DirTree::new();
+        a.add_images(&batch);
+        let mut b = DirTree::new();
+        for chunk in batch.chunks(1) {
+            b.add_images(chunk);
+        }
+        assert_eq!(a.by_path.len(), b.by_path.len());
+        for (path, &id) in a.by_path.iter() {
+            let other = b.lookup(path).unwrap();
+            assert_eq!(
+                (a.nodes[id].image_count, a.nodes[id].first_image.as_deref()),
+                (b.nodes[other].image_count, b.nodes[other].first_image.as_deref())
+            );
+        }
+    }
+
+    /// 压缩包单独计数，但参与 first_image 竞争。
+    #[test]
+    fn archives_count_separately_but_win_first_image() {
+        let mut t = DirTree::new();
+        t.add_images(&[p(&["root", "a", "5.jpg"])]);
+        t.add_archives(&[p(&["root", "a", "0.zip"])]);
+        let a = t.lookup(&p(&["root", "a"])).unwrap();
+        assert_eq!((t.nodes[a].image_count, t.nodes[a].archive_count), (1, 1));
+        assert_eq!(
+            t.first_image(a).unwrap().as_ref(),
+            p(&["root", "a", "0.zip"]).as_path()
+        );
+    }
+
+    /// 负增量沿祖先链传播且在 0 处饱和。
+    #[test]
+    fn adjust_counts_saturates_up_the_chain() {
+        let mut t = DirTree::new();
+        t.add_images(&[p(&["root", "a", "1.jpg"]), p(&["root", "b", "2.jpg"])]);
+        t.adjust_counts(&p(&["root", "a"]), -5, 0);
+        let a = t.lookup(&p(&["root", "a"])).unwrap();
+        let root = t.lookup(&p(&["root"])).unwrap();
+        assert_eq!(t.nodes[a].image_count, 0);
+        assert_eq!(t.nodes[root].image_count, 0);
+    }
+
+    /// DFS 展开顺序 + ├/└ 连接线位 + 折叠全部后根仍展开。
+    #[test]
+    fn rows_last_flags_and_collapse_all() {
+        let mut t = DirTree::new();
+        let top = t.ensure_dir(&p(&[]));
+        let root = t.ensure_dir(&p(&["root"]));
+        let a = t.ensure_dir(&p(&["root", "a"]));
+        t.ensure_dir(&p(&["root", "b"]));
+        t.ensure_dir(&p(&["root", "a", "x"]));
+        for id in [top, root, a] {
+            t.set_expanded(id, true);
+        }
+        let names: Vec<String> = t.rows().iter().map(|r| r.name.to_string()).collect();
+        assert_eq!(names.len(), 5);
+        assert_eq!(&names[1..], ["root", "a", "x", "b"]);
+        assert_eq!(t.rows()[3].last_flags & (1 << 3), 1 << 3); // x 是末子
+        assert_eq!(t.rows()[2].last_flags & (1 << 2), 0); // a 不是末子
+        assert_eq!(t.rows()[4].last_flags & (1 << 2), 1 << 2); // b 是末子
+        t.collapse_all();
+        assert_eq!(t.rows().len(), 2);
+        assert!(t.row_index(a).is_none());
+    }
+
+    #[test]
+    fn reconcile_subdirs_releases_removed_subtree_and_keeps_ids_safe() {
+        let mut t = DirTree::new();
+        let root_path = p(&["root"]);
+        let child_path = p(&["root", "gone"]);
+        let grandchild_path = p(&["root", "gone", "nested"]);
+        let root = t.ensure_dir(&root_path);
+        t.set_expanded(root, true);
+        let child = t.ensure_dir(&child_path);
+        let grandchild = t.ensure_dir(&grandchild_path);
+        t.add_images(&[p(&["root", "gone", "nested", "1.jpg"])]);
+        let removed = t.reconcile_subdirs(&root_path, &[]);
+        assert_eq!(removed, vec![child_path.clone()]);
+        assert!(t.lookup(&child_path).is_none());
+        assert!(t.lookup(&grandchild_path).is_none());
+        assert!(!t.is_alive(child));
+        assert!(!t.is_alive(grandchild));
+        assert!(t.nodes[child].children.is_empty());
+        assert!(t.nodes[child].path.as_os_str().is_empty());
+        assert_eq!(t.nodes[root].children.len(), 0);
+        assert_eq!(t.rows().len(), 1);
+    }
+
+    #[test]
+    fn fmt_count_groups_by_three() {
+        assert_eq!(fmt_count(0), "0");
+        assert_eq!(fmt_count(999), "999");
+        assert_eq!(fmt_count(1000), "1_000");
+        assert_eq!(fmt_count(1234567), "1_234_567");
+    }
 }

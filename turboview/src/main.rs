@@ -23,7 +23,7 @@ use turboview::{archive, turbo, win32};
 
 use anyhow::{Context as _, Result};
 use archive::{ARCHIVE_EXTENSIONS, IMAGE_EXTENSIONS as SUPPORTED_EXTENSIONS};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use gpui::{
     actions, div, img, point, prelude::*, uniform_list, AnyElement, App,
     AsyncApp, Bounds, ClickEvent, Context, DevicePixels, ExternalPaths, FocusHandle, ImageSource,
@@ -40,6 +40,8 @@ use std::time::{Duration, Instant};
 use turbo::{DecodedImage, RoiRect};
 use turboview::dirtree::{DirTree, fmt_count};
 use turboview::scanner::scan_one_level;
+use turboview::scheduler::{TaskPriority, TaskScheduler};
+use turboview::task::TaskRegistry;
 
 actions!(
     turboview,
@@ -66,11 +68,11 @@ actions!(
 );
 
 /// 侧边栏宽度（像素）
-const SIDEBAR_WIDTH: f32 = 280.0;
+const SIDEBAR_WIDTH: f32 = 300.0;
 /// 侧边栏行高
-const ROW_HEIGHT: f32 = 25.0;
+const ROW_HEIGHT: f32 = 28.0;
 /// 目录树每级缩进宽度
-const TREE_INDENT: f32 = 12.0;
+const TREE_INDENT: f32 = 14.0;
 
 /// 解码输出的最长边上限。实际值按**窗口物理尺寸**自适应（见
 /// `ImageViewer::decode_max_dim`）：1366×768 的机器只需要 ~1500，
@@ -111,9 +113,6 @@ const ROI_DEBOUNCE: Duration = Duration::from_millis(150);
 
 /// 幻灯片播放间隔（秒）
 const SLIDESHOW_INTERVAL: u64 = 3;
-
-/// 点击与拖拽的判定阈值（像素）
-const CLICK_THRESHOLD: f32 = 5.0;
 
 const ZOOM_MIN: f32 = 0.02;
 const ZOOM_MAX: f32 = 64.0;
@@ -284,10 +283,12 @@ struct ImageViewer {
     cache_budget: usize,
     /// 缓存条目上限（按预算推导）
     cache_max_entries: usize,
-    /// 同时在跑的预取解码数上限（按 CPU 核数；2 核机器上不再 4 张齐发）
+    /// 预取并发上限；始终为当前图保留一个额外解码槽。
     max_prefetch_tasks: usize,
-    /// 因并发上限没派发的预取任务（FIFO，有空位就补）
-    prefetch_queue: VecDeque<PathBuf>,
+    /// 包含当前图在内的总解码并发硬上限。
+    max_decode_tasks: usize,
+    /// 有界优先级预取队列；执行中的任务仍由 in_flight 跟踪
+    prefetch_queue: TaskScheduler<PathBuf>,
     /// 最近一次渲染的视口物理尺寸 (w, h)：解码尺寸按它自适应
     viewport_px: (f32, f32),
     /// 缩略图代际：全图落地后递增，迟到的缩略图结果据此丢弃
@@ -312,6 +313,8 @@ struct ImageViewer {
     /// 已经在等预热结果（防止重复挂等待任务）
     preload_waiting: bool,
     in_flight: Vec<PathBuf>,
+    /// 运行任务身份与协作取消；旧回调不能清除同路径的新一代任务
+    active_tasks: TaskRegistry<PathBuf>,
     /// 扫描代际：切换根目录后，旧根的迟到扫描结果会被丢弃
     scan_generation: u64,
     /// 进行中的惰性层级扫描数（状态栏提示用）
@@ -348,6 +351,9 @@ struct ImageViewer {
     roi_gen: u64,
     /// 是否有 ROI 解码在途（在途时只更新 roi_wanted，完成后重评）
     roi_inflight: bool,
+    /// 原生 ROI 解码不可中断；跨图时保持 busy，避免新旧大块解码重叠。
+    /// 请求采用 latest-wins：旧 worker 退出后只交接最新视口区域。
+    roi_worker_busy: bool,
     /// 状态栏操作反馈（复制/删除等），切图时清除
     note: Option<String>,
     /// 压缩包浏览信息（"📦 包名 › N 张"），跟随当前图：在包内才显示
@@ -434,7 +440,8 @@ impl ImageViewer {
             cache_budget,
             cache_max_entries,
             max_prefetch_tasks,
-            prefetch_queue: VecDeque::new(),
+            max_decode_tasks: max_prefetch_tasks + 1,
+            prefetch_queue: TaskScheduler::new(16, 1),
             viewport_px,
             thumb_gen: 0,
             decode_gen: 0,
@@ -446,6 +453,7 @@ impl ImageViewer {
             preload_path: std::sync::Arc::new(std::sync::Mutex::new(None)),
             preload_waiting: false,
             in_flight: Vec::new(),
+            active_tasks: TaskRegistry::default(),
             scan_generation: 0,
             pending_levels: 0,
             nav_target: None,
@@ -465,6 +473,7 @@ impl ImageViewer {
             roi_wanted: None,
             roi_gen: 0,
             roi_inflight: false,
+            roi_worker_busy: false,
             note: None,
             archive_info: None,
             archive_expanded: HashSet::new(),
@@ -583,6 +592,13 @@ impl ImageViewer {
         self.reveal_current_dir();
         let path = self.images[self.index].to_path_buf();
 
+        // Navigation is a priority boundary: keep work for the newly selected
+        // image, cancel obsolete decodes, and discard stale queued prefetches.
+        // The decoder itself may finish its current native call; its token
+        // prevents retries/result publication and the slot stays occupied until return.
+        self.active_tasks.cancel_where(|active| active != &path);
+        self.prefetch_queue.clear_pending();
+
         // 冷启动：预热线程可能已经把这张图解好了（与 UI 初始化并行），
         // 认领后直接走下面的缓存命中分支，连一次异步往返都省掉
         if self.preload_waiting {
@@ -643,9 +659,8 @@ impl ImageViewer {
         }
 
         if self.in_flight.contains(&path) {
-            // 这张图可能是预取任务：用户已经导航到它，必须让在途结果
-            // 在完成时直接上屏，而不能把它当作纯缓存预取然后静默返回。
-            self.thumb_gen += 1;
+            // 原生解码调用仍占用 worker。无论它是预取还是已取消任务，都不
+            // 启动同路径的第二份解码；若已取消且用户又选回此图，完成回调会重启。
             cx.notify();
             return;
         }
@@ -754,22 +769,32 @@ impl ImageViewer {
         level: turboview::scanner::DirLevel,
         cx: &mut Context<Self>,
     ) {
-        let Some(id) = self.tree.lookup(dir) else {
+        if self.tree.lookup(dir).is_none() {
             return;
-        };
+        }
         let turboview::scanner::DirLevel {
             subdirs,
             images,
             archives,
         } = level;
         // 新建的子目录先挂进树（收起状态，用户点开才扫）
-        self.tree.add_subdirs(id, &subdirs);
+        let removed_dirs = self.tree.reconcile_subdirs(dir, &subdirs);
+        let Some(id) = self.tree.lookup(dir) else {
+            return;
+        };
 
         let new: HashSet<PathBuf> = images.iter().cloned().chain(archives.iter().cloned()).collect();
+        let under_removed_dir = |p: &Path| match split_virtual(p) {
+            Some((archive, _)) => removed_dirs.iter().any(|root| archive.starts_with(root)),
+            None => removed_dirs.iter().any(|root| p.starts_with(root)),
+        };
         let old: HashSet<PathBuf> = self
             .images
             .iter()
-            .filter(|p| p.parent() == Some(dir) && split_virtual(p).is_none())
+            .filter(|p| {
+                (p.parent() == Some(dir) && split_virtual(p).is_none())
+                    || under_removed_dir(p)
+            })
             .map(|p| p.to_path_buf())
             .collect();
         let removed: Vec<PathBuf> = old.iter().filter(|p| !new.contains(*p)).cloned().collect();
@@ -783,11 +808,13 @@ impl ImageViewer {
         let belongs = |p: &Path| -> bool {
             gone.contains(p) || split_virtual(p).is_some_and(|(a, _)| gone.contains(&a))
         };
+        // 文件被删除时同步移除尚未派发的预取，避免队列继续读失效路径。
+        self.prefetch_queue.cancel_pending(|p| belongs(p));
+        self.active_tasks.cancel_where(|p| belongs(p));
         let cur = self.current_path().map(Path::to_path_buf);
         let cur_gone = cur.as_ref().is_some_and(|p| belongs(p));
         self.images.retain(|p| !belongs(p));
         self.cache.retain(|(p, _)| !belongs(p));
-        self.in_flight.retain(|p| !belongs(p));
         for a in &removed {
             if archive::is_archive(a) {
                 self.archive_expanded.remove(a);
@@ -802,8 +829,13 @@ impl ImageViewer {
             }
         }
 
-        let rm_img = removed.iter().filter(|p| !archive::is_archive(p)).count();
-        let rm_arc = removed.len() - rm_img;
+        // Virtual archive entries are navigation items, not directory-tree files.
+        let removed_disk: Vec<&PathBuf> = removed
+            .iter()
+            .filter(|p| split_virtual(p).is_none())
+            .collect();
+        let rm_img = removed_disk.iter().filter(|p| !archive::is_archive(p)).count();
+        let rm_arc = removed_disk.len() - rm_img;
         let add_img = added.iter().filter(|p| !archive::is_archive(p)).count();
         let add_arc = added.len() - add_img;
         let add_total = added.len();
@@ -959,7 +991,7 @@ impl ImageViewer {
                             *g = None;
                         }
                         if let Some(p) = view.images.get(view.index) {
-                            view.spawn_load_now(p.to_path_buf(), true, cx);
+                            view.spawn_load(p.to_path_buf(), true, cx);
                         }
                     }
                 }
@@ -973,21 +1005,40 @@ impl ImageViewer {
     /// 后台解码；`set_current` 为 false 时是纯预取（只进缓存）。
     /// 预取受并发上限约束：满了排队，解码完成回调里再补位。
     fn spawn_load(&mut self, path: PathBuf, set_current: bool, cx: &mut Context<Self>) {
-        if !set_current && self.in_flight.len() >= self.max_prefetch_tasks {
-            if !self.prefetch_queue.contains(&path) && !self.in_flight.contains(&path) {
-                self.prefetch_queue.push_back(path);
+        if set_current {
+            if self.in_flight.len() >= self.max_decode_tasks {
+                // 原生解码不可抢占：当前图进入最高优先级队列，等待一个真实 worker 槽释放。
+                self.prefetch_queue.schedule(path, TaskPriority::Current);
+            } else {
+                self.prefetch_queue.cancel_pending(|queued| queued == &path);
+                self.spawn_load_now(path, true, cx);
             }
             return;
         }
-        self.spawn_load_now(path, set_current, cx);
+        if self.in_flight.contains(&path) {
+            return;
+        }
+        if self.in_flight.len() >= self.max_prefetch_tasks {
+            self.prefetch_queue.schedule(path, TaskPriority::Prefetch);
+            return;
+        }
+        self.spawn_load_now(path, false, cx);
     }
 
     /// 并发有空位时补发排队中的预取任务
     fn pump_prefetch_queue(&mut self, cx: &mut Context<Self>) {
-        while self.in_flight.len() < self.max_prefetch_tasks {
-            let Some(next) = self.prefetch_queue.pop_front() else {
+        while self.in_flight.len() < self.max_decode_tasks {
+            let Some((next, priority)) = self.prefetch_queue.pop_pending_with_priority() else {
                 break;
             };
+            // Keep one worker slot reserved for a newly selected image. A queued
+            // Current task may use it; Prefetch work may not.
+            if priority == TaskPriority::Prefetch
+                && self.in_flight.len() >= self.max_prefetch_tasks
+            {
+                self.prefetch_queue.schedule(next, priority);
+                break;
+            }
             if self.cache.iter().any(|(p, _)| *p == next) || self.in_flight.contains(&next) {
                 continue;
             }
@@ -1055,6 +1106,9 @@ impl ImageViewer {
     }
 
     fn spawn_load_now(&mut self, path: PathBuf, set_current: bool, cx: &mut Context<Self>) {
+        let task = self.active_tasks.start(path.clone());
+        let task_id = task.id;
+        let cancellation = task.cancellation;
         self.in_flight.push(path.clone());
         let fast = self.fast_mode;
         let dec_gen = self.decode_gen;
@@ -1073,9 +1127,13 @@ impl ImageViewer {
 
         cx.spawn(async move |view: WeakEntity<Self>, cx: &mut AsyncApp| {
             let decode_path = path.clone();
+            let decode_cancellation = cancellation.clone();
             let mut result = cx
                 .background_executor()
                 .spawn(async move {
+                    if !decode_cancellation.is_active() {
+                        return Err(anyhow::anyhow!("decode cancelled"));
+                    }
                     // 预取降优先级：低配机上 4 个同级线程会把当前图的解码挤慢
                     if !set_current {
                         win32::thread_priority_low();
@@ -1084,41 +1142,75 @@ impl ImageViewer {
                     if !set_current {
                         win32::thread_priority_normal();
                     }
+                    if !decode_cancellation.is_active() {
+                        return Err(anyhow::anyhow!("decode cancelled"));
+                    }
                     r
                 })
                 .await;
 
+            // 第三方解码器本身不可中断；解码返回后立即检查取消信号，
+            // 避免已失效任务继续重试或把结果送回 UI。
+
             // 文件可能还在下载/拷贝中（NAS 上的扫描本很常见）：读到半个 JPEG
             // 时等一下重试。用异步 timer 而不是 thread::sleep —— 后者会占死
             // 一个 executor worker 800ms，低配机核少时把预取/ROI 全堵在后面。
-            if let Err(e) = &result {
-                if is_truncated_jpeg_error(&format!("{e:#}")) {
-                    if trace_enabled() {
-                        trace("decode truncated → retry in 800ms");
+            if cancellation.is_active() {
+                if let Err(e) = &result {
+                    if is_truncated_jpeg_error(&format!("{e:#}")) {
+                        if trace_enabled() {
+                            trace("decode truncated → retry in 800ms");
+                        }
+                        cx.background_executor()
+                            .timer(Duration::from_millis(800))
+                            .await;
+                        if cancellation.is_active() {
+                            let retry_path = path.clone();
+                            let retry_token = cancellation.clone();
+                            result = cx
+                                .background_executor()
+                                .spawn(async move {
+                                    if !retry_token.is_active() {
+                                        return Err(anyhow::anyhow!("decode cancelled"));
+                                    }
+                                    if !set_current {
+                                        win32::thread_priority_low();
+                                    }
+                                    let r = decode_any(&retry_path, fast, max_dim);
+                                    if !set_current {
+                                        win32::thread_priority_normal();
+                                    }
+                                    if !retry_token.is_active() {
+                                        return Err(anyhow::anyhow!("decode cancelled"));
+                                    }
+                                    r
+                                })
+                                .await;
+                        }
                     }
-                    cx.background_executor()
-                        .timer(Duration::from_millis(800))
-                        .await;
-                    let retry_path = path.clone();
-                    result = cx
-                        .background_executor()
-                        .spawn(async move {
-                            if !set_current {
-                                win32::thread_priority_low();
-                            }
-                            let r = decode_any(&retry_path, fast, max_dim);
-                            if !set_current {
-                                win32::thread_priority_normal();
-                            }
-                            r
-                        })
-                        .await;
                 }
             }
 
             view.update(cx, |view, cx| {
+                // 先按任务身份完成登记。即使任务已取消，也必须在原生解码
+                // 调用返回后释放 in_flight；旧一代不能清理同路径的新一代。
+                if !view.active_tasks.finish(&path, task_id) {
+                    return;
+                }
                 view.in_flight.retain(|p| p != &path);
-                // 让位后立刻补发排队中的预取
+                if !cancellation.is_active() {
+                    // 用户可能在旧任务取消后又选回同一路径，或切换了解码模式。
+                    // 等旧原生调用真正退出后再启动新一代，避免同路径解码重叠。
+                    // 当前图先占位，再补发低优先级预取。
+                    let cached = view.cache.iter().any(|(cached_path, _)| cached_path == &path);
+                    if view.current_path() == Some(&path) && !cached {
+                        view.spawn_load(path.clone(), true, cx);
+                    } else {
+                        view.pump_prefetch_queue(cx);
+                    }
+                    cx.notify();
+                    return;
+                }
                 view.pump_prefetch_queue(cx);
                 // decode_gen 变化：模式切换已作废旧解码，连缓存都不写入
                 if view.decode_gen != dec_gen {
@@ -1221,16 +1313,18 @@ impl ImageViewer {
         // 的流，用户一按"下一张"就得排在它们后面等好几秒。
         // 收紧成"单线程 + 只取下一张"，把带宽留给用户真正要看的那张。
         let slow_source = self.on_remote() || self.rotational;
+        self.max_decode_tasks = self.max_prefetch_tasks + 1;
         if slow_source {
             self.max_prefetch_tasks = 1;
-            self.prefetch_queue.truncate(1);
+            self.max_decode_tasks = self.max_prefetch_tasks + 1;
+            self.prefetch_queue.clear_pending();
         }
         // 快速连翻时队列会积压，丢掉离当前位置超过 3 张的过期项
         let idx_now = self.index;
         let imgs = &self.images;
         // images 始终按路径有序（insert_level_sorted / find_image_index 都依赖这一点）。
         // 用二分替代逐项线性 position：几十万张图时每次翻页少做 O(N) 全表比较。
-        self.prefetch_queue.retain(|p| {
+        self.prefetch_queue.retain_pending(|p| {
             let i = imgs.partition_point(|x| x.as_ref() < p.as_path());
             i < imgs.len() && imgs[i].as_ref() == p.as_path() && i.abs_diff(idx_now) <= 3
         });
@@ -1299,8 +1393,8 @@ impl ImageViewer {
         self.current = None;
         self.error = None;
         self.cache.clear();
-        self.in_flight.clear();
-        self.prefetch_queue.clear();
+        self.active_tasks.cancel_where(|_| true);
+        self.prefetch_queue.clear_pending();
         self.thumb_gen += 1;
         self.slideshow = false;
         self.slideshow_gen += 1;
@@ -1367,6 +1461,9 @@ impl ImageViewer {
         level: turboview::scanner::DirLevel,
         cx: &mut Context<Self>,
     ) {
+        if !self.tree.is_alive(id) {
+            return;
+        }
         let turboview::scanner::DirLevel {
             subdirs,
             images,
@@ -1658,8 +1755,8 @@ impl ImageViewer {
         self.decode_gen += 1;
         self.thumb_gen += 1; // 同时作废旧 fast 模式的预览帧
         self.cache.clear();
-        self.in_flight.clear();
-        self.prefetch_queue.clear();
+        self.active_tasks.cancel_where(|_| true);
+        self.prefetch_queue.clear_pending();
         let index = self.index;
         self.goto(index, cx);
     }
@@ -1855,7 +1952,7 @@ impl ImageViewer {
 
     /// 派发一次 ROI 解码（背景线程 → 150ms 防抖 → 解码 → 代际校验 → 上屏）
     fn roi_kick(&mut self, cx: &mut Context<Self>) {
-        if self.roi_inflight {
+        if self.roi_inflight || self.roi_worker_busy {
             return;
         }
         let Some(rect) = self.roi_wanted.clone() else { return };
@@ -1866,6 +1963,7 @@ impl ImageViewer {
         }
         let Some(cur) = self.current.as_ref() else { return };
         self.roi_inflight = true;
+        self.roi_worker_busy = true;
         self.roi_gen += 1;
         let gen_id = self.roi_gen;
         let orientation = cur.orientation;
@@ -1883,9 +1981,14 @@ impl ImageViewer {
                 })
                 .await;
             view.update(cx, |view, cx| {
-                // 代际已变：这次结果属于上一张图。既不落地，也不能复位
-                // roi_inflight —— 那会把新图已在途的解码标志清掉。
+                // 原生解码不可中断。无论结果是否过期，都先释放唯一 ROI
+                // worker；若期间视口已变化，则立即交接给最新的期望区域。
+                view.roi_worker_busy = false;
                 if view.roi_gen != gen_id {
+                    if view.roi_wanted.is_some() {
+                        view.roi_kick(cx);
+                    }
+                    cx.notify();
                     return;
                 }
                 view.roi_inflight = false;
@@ -1930,7 +2033,7 @@ impl ImageViewer {
         match win32::delete_to_recycle_bin(&path) {
             Ok(()) => {
                 self.cache.retain(|(p, _)| p != &path);
-                self.in_flight.retain(|p| p != &path);
+                self.active_tasks.cancel(&path);
                 if let Some(i) = self.find_image_index(&path) {
                     self.images.remove(i);
                 }
@@ -2159,21 +2262,19 @@ impl ImageViewer {
         }
     }
 
-    /// 左键抬起：位移小于阈值视为点击 —— 单击下一张；双击不触发任何动作
+    /// 左键抬起只结束拖拽；翻页由 GPUI 的 ClickEvent 处理，
+    /// 不再依赖 MouseDown/MouseUp 必须在同一命中节点成对到达。
     fn on_mouse_up(&mut self, event: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
         if event.button == MouseButton::Left {
-            if let Some((start, _)) = self.drag {
-                let dx = f32::from(event.position.x - start.x);
-                let dy = f32::from(event.position.y - start.y);
-                let is_click = dx.abs() < CLICK_THRESHOLD && dy.abs() < CLICK_THRESHOLD;
-                // 只认单击。双击的第二次抬起必须忽略，否则一次双击会翻两张
-                // （第一次抬起已 nav_next）；更不再用它切换目录树。
-                if is_click && event.click_count < 2 && !self.images.is_empty() {
-                    self.nav_next(cx);
-                }
-            }
             self.drag = None;
             cx.notify();
+        }
+    }
+
+    /// 每次左键点击都翻到下一张；连续点击和双击不做节流或合并。
+    fn on_image_click(&mut self, _event: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if !self.images.is_empty() {
+            self.nav_next(cx);
         }
     }
 
@@ -2274,22 +2375,20 @@ impl ImageViewer {
             }
         }
 
-        // 侧边栏专用派生色：gpui 基础色板只有 8 个色，
-        // 缩进参考线与悬停底需要额外的中间色
-        let (guide, hover_bg) = if self.dark_mode {
-            (gpui::rgba(0xFFFFFF1E), gpui::rgba(0xFFFFFF12))
+        let hover_bg = if self.dark_mode {
+            gpui::rgba(0xFFFFFF12)
         } else {
-            (gpui::rgba(0x00000018), gpui::rgba(0x0000000D))
+            gpui::rgba(0x0000000D)
         };
 
-        // 工具栏小图标按钮（20x20 点按区）。
+        // 工具栏小图标按钮（24x24 点按区）。
         // 图标用文字字形而非 SVG：gpui_windows 未实现 SvgRenderer，
         // svg() 元素在这套后端上画不出任何东西（状态栏那组图标同理）。
         let tool = |glyph: &'static str, id: (&'static str, usize)| {
             div()
                 .id(id)
-                .w(px(20.0))
-                .h(px(20.0))
+                .w(px(24.0))
+                .h(px(24.0))
                 .flex_shrink_0()
                 .flex()
                 .items_center()
@@ -2304,7 +2403,7 @@ impl ImageViewer {
         };
 
         let header = div()
-            .h(px(32.0))
+            .h(px(36.0))
             .flex_shrink_0()
             .flex()
             .items_center()
@@ -2319,7 +2418,7 @@ impl ImageViewer {
                     .min_w_0()
                     .text_xs()
                     .text_color(colors.disabled)
-                    .child("目录树"),
+                    .child("文件夹"),
             )
             .child(
                 tool("⟳", ("tv-tool-refresh", 0)).on_click(cx.listener(
@@ -2351,7 +2450,7 @@ impl ImageViewer {
             .items_center()
             .gap(px(6.0))
             .px_2()
-            .py(px(3.0))
+            .py(px(5.0))
             .border_b_1()
             .border_color(colors.border)
             .text_xs()
@@ -2406,45 +2505,11 @@ impl ImageViewer {
                                 let has_toggle =
                                     row.has_children || !row.scanned || row.loading;
 
-                                // 层级连接线（资源管理器/VS Code 风格）：
-                                // 非最后子节点的竖线贯穿整行；最后子节点的止于行中点，
-                                // 并在本层补一条横线，形成 ├ / └ 的层级关系。
-                                let mut indent = div().h_full().flex_shrink_0().flex().flex_row();
-                                let depth = row.depth.min(63) as usize;
-                                for level in 0..depth {
-                                    let ancestor_last = (row.last_flags >> level) & 1 == 1;
-                                    let cell = div()
-                                        .relative()
-                                        .w(px(TREE_INDENT))
-                                        .h_full()
-                                        .flex_shrink_0()
-                                        .flex()
-                                        .justify_center()
-                                        .child(
-                                            div()
-                                                .w(px(1.0))
-                                                .h(if ancestor_last {
-                                                    px(ROW_HEIGHT / 2.0)
-                                                } else {
-                                                    px(ROW_HEIGHT)
-                                                })
-                                                .bg(guide),
-                                        );
-                                    let cell = if level + 1 == depth {
-                                        cell.child(
-                                            div()
-                                                .absolute()
-                                                .left(px(TREE_INDENT / 2.0))
-                                                .top(px(ROW_HEIGHT / 2.0))
-                                                .w(px(TREE_INDENT / 2.0))
-                                                .h(px(1.0))
-                                                .bg(guide),
-                                        )
-                                    } else {
-                                        cell
-                                    };
-                                    indent = indent.child(cell);
-                                }
+                                // 简洁缩进：不画贯穿整行的连接线，避免深层目录显得拥挤。
+                                let indent = div()
+                                    .w(px(TREE_INDENT * row.depth.min(24) as f32))
+                                    .h_full()
+                                    .flex_shrink_0();
 
                                 // 计数/次要文字用淡色；箭头用正文色 + 透明度，更接近资源管理器
                                 let fg = if is_selected {
@@ -2540,9 +2605,9 @@ impl ImageViewer {
                                     .w_full()
                                     .flex()
                                     .items_center()
-                                    .pl(px(4.0))
-                                    .pr(px(6.0))
-                                    .mx(px(3.0))
+                                    .pl(px(6.0))
+                                    .pr(px(8.0))
+                                    .mx(px(4.0))
                                     .rounded_md()
                                     .text_sm()
                                     .cursor_pointer()
@@ -2635,13 +2700,13 @@ impl ImageViewer {
             .flex_shrink_0()
             .flex()
             .flex_col()
-            .py(px(2.0))
+            .py(px(4.0))
             .border_b_1()
             .border_color(colors.border)
             .child(
                 div()
                     .id("tv-places-head")
-                    .h(px(22.0))
+                    .h(px(26.0))
                     .w_full()
                     .flex()
                     .items_center()
@@ -2664,29 +2729,41 @@ impl ImageViewer {
         }
 
         for (ix, (kind, label, path)) in entries.into_iter().enumerate() {
+            let place_icon: AnyElement = if kind == 1 {
+                div()
+                    .w(px(16.0))
+                    .h(px(16.0))
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_color(colors.disabled)
+                    .child("▰")
+                    .into_any_element()
+            } else {
+                img(ImageSource::Render(
+                    self.folder_icons[(self.dark_mode as usize)][0].clone(),
+                ))
+                .w(px(14.0))
+                .h(px(14.0))
+                .flex_shrink_0()
+                .into_any_element()
+            };
             let row = div()
                 .id(("tv-place", ix))
-                .h(px(20.0))
+                .h(px(24.0))
                 .w_full()
                 .flex()
                 .items_center()
-                .gap(px(5.0))
-                .px_2()
+                .gap(px(7.0))
+                .px_3()
                 .text_sm()
                 .cursor_pointer()
                 .hover(move |s| s.bg(hover_bg))
                 .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
                     this.open_root(path.clone(), cx);
                 }))
-                .child(
-                    div()
-                        .w(px(16.0))
-                        .h_full()
-                        .flex_shrink_0()
-                        .flex()
-                        .items_center()
-                        .child(if kind == 1 { "💾" } else { "📁" }),
-                )
+                .child(place_icon)
                 .child(
                     div()
                         .flex_1()
@@ -2814,6 +2891,7 @@ impl Render for ImageViewer {
             .on_mouse_down(MouseButton::Right, cx.listener(Self::on_mouse_down))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
+            .on_click(cx.listener(Self::on_image_click))
             .on_scroll_wheel(cx.listener(Self::on_scroll_wheel));
 
         if let Some(image) = &self.current {
@@ -2864,91 +2942,12 @@ impl Render for ImageViewer {
             );
         }
 
-        // ---------- 状态栏 ----------
-        let scan_note = if self.pending_levels > 0 {
-            " · ⏳ 扫描中".to_string()
-        } else {
-            String::new()
-        };
-        let (left_text, right_text) = match (&self.current, &self.error) {
-            (Some(image), _) => {
-                // 压缩包条目显示 "包名 › 条目名"，本地文件显示文件名
-                let name = self
-                    .current_path()
-                    .map(|p| display_name(p))
-                    .unwrap_or_default();
-                // 原图尺寸按显示方向报告（EXIF 旋转后宽高互换是正常的）
-                let (sw, sh) =
-                    turbo::oriented_dims(image.orientation, image.src_width, image.src_height);
-                let scaled = image.width != sw || image.height != sh;
-                let dims = if scaled {
-                    format!("尺寸 {} × {}（原图 {} × {}）", image.width, image.height, sw, sh)
-                } else {
-                    format!("尺寸 {} × {}", image.width, image.height)
-                };
-                let left = format!(
-                    "[{}/{}]  {}  {}",
-                    self.index + 1,
-                    self.images.len(),
-                    name,
-                    dims
-                );
-                let zoom_pct = (self.effective_zoom * 100.0).round() as i32;
-                let perf = if image.preloaded {
-                    // 冷启动预热：解码发生在 UI 初始化期间，用户没等它。
-                    // 网络盘上这一坨里大半是缺页读取，标出来免得以为是解码慢
-                    format!(
-                        "解码 {}{} · 启动预热",
-                        fmt_ms(image.decode_ms),
-                        if image.decode_ms >= 500.0 { "（含读取）" } else { "" }
-                    )
-                } else if image.preview {
-                    // 首帧预览：说明当前是快解码结果，全质量帧马上覆盖
-                    format!("预览 {}", fmt_ms(image.decode_ms))
-                } else if image.cached {
-                    "缓存命中".to_string()
-                } else if image.read_ms < 80.0 && image.decode_ms >= 500.0 {
-                    // mmap 路径：磁盘/网络的读取摊在解码的缺页里，read_ms 近似 0。
-                    // 这种"解码"其实大半是在等字节，标清楚免得误会解码器
-                    format!(
-                        "解码 {} · 含读取{}",
-                        fmt_ms(image.decode_ms),
-                        if image.fast { " · 快速" } else { "" }
-                    )
-                } else if image.read_ms >= 80.0 {
-                    // 网络盘/机械盘上读字节比解码慢一个量级：分开报，
-                    // 否则一个 1.3 s 的"解码"看着像解码器太慢（其实是网速）
-                    format!(
-                        "读取 {} + 解码 {}{}",
-                        fmt_ms(image.read_ms),
-                        fmt_ms(image.decode_ms),
-                        if image.fast { " · 快速" } else { "" }
-                    )
-                } else {
-                    format!(
-                        "解码 {}{}",
-                        fmt_ms(image.decode_ms),
-                        if image.fast { " · 快速" } else { "" }
-                    )
-                };
-                let right = format!("缩放 {}% · {}", zoom_pct, perf);
-                (left, right)
-            }
-            (None, Some(err)) => ("解码失败".to_string(), err.clone()),
-            (None, None) => (
-                format!("{} 张图片", self.images.len()),
-                "左键下一张 · 右键上一张 · 滚轮翻页 · Ctrl+滚轮缩放 · ESC 全屏切换 · Del 删除 · Ctrl+C 复制 · Ctrl+Shift+C 路径 · Ctrl+E 定位 · R 随机 · S 幻灯 · B 侧边栏 · F5 刷新 · T 主题 · 0 适应 · 1 原图 · Shift+F 快速 · Q 退出 · 支持 zip/7z/rar 压缩包"
-                    .to_string(),
-            ),
-        };
-        let right_text = format!("{}{}", right_text, scan_note);
-
-        // 状态栏徽标：全部无背景色 —— 文字与单色图标统一取主题文字色
-        // （亮色=黑 / 暗色=白），不引入任何色块，保持状态栏干净。
+        // ---------- 状态栏：仅保留图标，不显示任何状态文字 ----------
         let mut badges: Vec<AnyElement> = Vec::new();
 
+        // 状态栏只显示无文字图标；状态信息仍由主视图和侧栏承载。
         // 压缩包浏览信息
-        if let Some(info) = &self.archive_info {
+        if self.archive_info.is_some() {
             badges.push(
                 div()
                     .h(px(18.0))
@@ -2965,12 +2964,11 @@ impl Render for ImageViewer {
                             .h(px(15.0))
                             .flex_shrink_0(),
                     )
-                    .child(info.clone())
                     .into_any_element(),
             );
         }
         // 随机模式开关：常驻显示（开/关都可见），点击即切换。
-        // 开启时用正常文字色，关闭时降到 disabled 色；无任何背景色块。
+        // 开启时用正常图标色，关闭时降到 disabled 色；无任何背景色块。
         badges.push(
             div()
                 .h(px(18.0))
@@ -2993,11 +2991,6 @@ impl Render for ImageViewer {
                         .h(px(15.0))
                         .flex_shrink_0(),
                 )
-                .child(if self.random_mode {
-                    "随机 开"
-                } else {
-                    "随机 关"
-                })
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|this, _: &MouseDownEvent, _w, cx| {
@@ -3031,11 +3024,6 @@ impl Render for ImageViewer {
                         .h(px(15.0))
                         .flex_shrink_0(),
                 )
-                .child(if self.slideshow {
-                    format!("幻灯 开 {}s", SLIDESHOW_INTERVAL)
-                } else {
-                    "幻灯 关".to_string()
-                })
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|this, _: &MouseDownEvent, _w, cx| {
@@ -3070,11 +3058,6 @@ impl Render for ImageViewer {
                         .h(px(15.0))
                         .flex_shrink_0(),
                 )
-                .child(if self.original_view {
-                    "原图 开"
-                } else {
-                    "原图 关"
-                })
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|this, _: &MouseDownEvent, w, cx| {
@@ -3107,7 +3090,6 @@ impl Render for ImageViewer {
                     .h(px(12.0))
                     .flex_shrink_0(),
                 )
-                .child(if self.dark_mode { "暗色" } else { "亮色" })
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|this, _: &MouseDownEvent, _w, cx| {
@@ -3138,7 +3120,6 @@ impl Render for ImageViewer {
                     .h(px(15.0))
                     .flex_shrink_0(),
                 )
-                .child(if self.fullscreen { "退出全屏" } else { "全屏" })
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|this, _: &MouseDownEvent, _w, cx| {
@@ -3147,23 +3128,6 @@ impl Render for ImageViewer {
                 )
                 .into_any_element(),
         );
-
-        // 最近一次操作反馈
-        if let Some(note) = &self.note {
-            badges.push(
-                div()
-                    .h(px(18.0))
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(4.0))
-                    .px_1()
-                    .text_xs()
-                    .text_color(colors.text)
-                    .child(note.clone())
-                    .into_any_element(),
-            );
-        }
 
         // 目录树开/关按钮始终留在状态栏最左侧，避免按钮随状态消失。
         // B 键与按钮共用 toggle_sidebar，初始隐藏目录树时也能立即恢复。
@@ -3189,7 +3153,6 @@ impl Render for ImageViewer {
                     }),
                 )
                 .child("◧")
-                .child(if self.sidebar_visible { "目录树 开 · B" } else { "目录树 关 · B" })
                 .into_any_element(),
         ];
 
@@ -3216,7 +3179,6 @@ impl Render for ImageViewer {
                     .h(px(17.0))
                     .flex_shrink_0(),
             )
-            .child(left_text)
             .child(
                 div()
                     .flex_1()
@@ -3227,7 +3189,7 @@ impl Render for ImageViewer {
                     .gap(px(6.0))
                     .children(badges.into_iter()),
             )
-            .child(right_text);
+            ;
 
         // ---------- 侧边栏 ----------
         let sidebar = if self.sidebar_visible {
@@ -3296,15 +3258,6 @@ fn looks_like_jpeg(path: &Path) -> bool {
             .as_deref(),
         Some("jpg") | Some("jpeg")
     )
-}
-
-/// 毫秒格式化：超过 1 秒就换单位，状态栏宽度有限
-fn fmt_ms(ms: f64) -> String {
-    if ms >= 1000.0 {
-        format!("{:.2} s", ms / 1000.0)
-    } else {
-        format!("{:.1} ms", ms)
-    }
 }
 
 /// libjpeg 的"数据没走完"类错误：文件被截断，或还在下载/拷贝中。
@@ -3584,6 +3537,16 @@ fn make_logo_image() -> Arc<RenderImage> {
 }
 
 fn main() {
+    // GUI builds have no console. Preserve panic details so startup failures
+    // remain diagnosable without forcing trace logging in normal releases.
+    std::panic::set_hook(Box::new(|info| {
+        use std::io::Write;
+        let path = std::env::temp_dir().join("turboview-startup.log");
+        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+            let _ = writeln!(file, "[PANIC] {info}");
+            let _ = writeln!(file, "[BACKTRACE] {}", std::backtrace::Backtrace::force_capture());
+        }
+    }));
     trace("entry");
     // 必须第一个调用：PerMonitorV2 DPI 感知。否则 125%+ 缩放的屏幕上
     // 窗口按 1:1 物理像素渲染，“最大化”只占屏幕左上角一小块。
@@ -3701,6 +3664,7 @@ fn main() {
         None => "TurboView".to_string(),
     };
 
+    trace("platform init begin");
     let platform = Rc::new(
         gpui_windows::WindowsPlatform::new(false).expect("初始化 Windows 平台失败"),
     );
@@ -3754,6 +3718,7 @@ fn main() {
             .unwrap_or_else(|| size(px(900.), px(600.)));
         let bounds = Bounds::centered(None, restore, cx);
 
+        trace("open_window begin");
         cx.open_window(
             WindowOptions {
                 // 启动即最大化（bounds 作为还原尺寸记忆）
@@ -3767,6 +3732,7 @@ fn main() {
                 ..Default::default()
             },
             |_, cx| {
+                trace("window entity init begin");
                 cx.new(|cx| {
                     // 打开单张图片（默认看图器场景）时目录树默认收起，只留展开按钮
                     let mut viewer = ImageViewer::new(
@@ -3794,6 +3760,7 @@ fn main() {
                         }
                         None => {}
                     }
+                    trace("window entity init complete");
                     viewer
                 })
             },
@@ -3802,7 +3769,9 @@ fn main() {
         trace("window created");
 
         cx.activate(true);
+        trace("window activated");
     });
+    trace("event loop exit");
 }
 
 // ---------------------------------------------------------------------------

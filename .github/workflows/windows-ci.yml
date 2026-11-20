@@ -2,7 +2,7 @@ name: Windows Rust CI
 
 on:
   push:
-    branches: [main, "perf/**"]
+    branches: [main, "perf/**", "next/**"]
   pull_request:
     branches: [main]
     paths:
@@ -54,7 +54,7 @@ jobs:
           -DWITH_TURBOJPEG=ON
           -DENABLE_SHARED=OFF
           -DENABLE_STATIC=ON
-          -DWITH_CRT_DLL=ON
+          -DWITH_CRT_DLL=OFF
           -DWITH_JAVA=OFF
           -DWITH_FUZZ=OFF
           -DWITH_TOOLS=OFF
@@ -83,21 +83,56 @@ jobs:
           $exe = Join-Path $env:GITHUB_WORKSPACE "turboview\target\release\turboview.exe"
           if (!(Test-Path $exe)) { throw "Release executable not found: $exe" }
           Copy-Item $exe $dist
-          Copy-Item (Join-Path $env:GITHUB_WORKSPACE "README.md") $dist
-          Copy-Item (Join-Path $env:GITHUB_WORKSPACE "LICENSE.md") $dist
-          @'
-          TurboView - Windows x64 Portable
-          =================================
+          Copy-Item (Join-Path $env:GITHUB_WORKSPACE "turboview\README.md") (Join-Path $dist "README.md")
+          Copy-Item (Join-Path $env:GITHUB_WORKSPACE "LICENSE.md") (Join-Path $dist "LIBJPEG-TURBO-LICENSE.md")
+          Copy-Item (Join-Path $env:GITHUB_WORKSPACE "README.ijg") (Join-Path $dist "README.ijg")
+          Copy-Item (Join-Path $env:GITHUB_WORKSPACE "turboview\CHANGELOG.md") $dist
+          @"
+          TurboView 0.2.0 - Windows x64 Portable
+          ======================================
+
+          Version: 0.2.0
+          Commit: $env:GITHUB_SHA
 
           Run turboview.exe directly. No Rust or Cargo installation is required.
-          Keep the executable and the accompanying license/readme files together.
+          Keep the executable, README.md, CHANGELOG.md and license notices together.
 
-          This package is built from the main branch commit selected by this workflow.
-          Windows system graphics components and a compatible Microsoft Visual C++
-          runtime may still be provided by Windows or need to be installed separately.
-          '@ | Set-Content -Encoding UTF8 (Join-Path $dist "PORTABLE-README.txt")
+          This package is built from the exact Git commit associated with this workflow run.
+          Windows system graphics components are provided by Windows. The C/C++ runtime
+          is statically linked; no separate Visual C++ Redistributable or ICU installation is required.
+          "@ | Set-Content -Encoding UTF8 (Join-Path $dist "PORTABLE-README.txt")
           $zip = Join-Path $env:RUNNER_TEMP "TurboView-Windows-x64-portable.zip"
           Compress-Archive -Path (Join-Path $dist "*") -DestinationPath $zip -Force
+
+          # Smoke-check the actual archive, not just the staging directory.
+          $verify = Join-Path $env:RUNNER_TEMP "TurboView-portable-verify"
+          Expand-Archive -LiteralPath $zip -DestinationPath $verify -Force
+          $required = @(
+            "turboview.exe",
+            "README.md",
+            "CHANGELOG.md",
+            "LIBJPEG-TURBO-LICENSE.md",
+            "README.ijg",
+            "PORTABLE-README.txt"
+          )
+          foreach ($name in $required) {
+            if (!(Test-Path (Join-Path $verify $name))) {
+              throw "Portable ZIP is missing required file: $name"
+            }
+          }
+          if ((Get-Item (Join-Path $verify "turboview.exe")).Length -lt 1MB) {
+            throw "Portable executable is unexpectedly small."
+          }
+          # Verify the executable does not depend on optional VC++ or ICU DLLs.
+          $imports = (& dumpbin.exe /nologo /dependents (Join-Path $verify "turboview.exe") 2>&1 | Out-String)
+          if ($LASTEXITCODE -ne 0) { throw "dumpbin dependency inspection failed: $imports" }
+          $forbiddenRuntime = '(?i)\b(?:icuuc|icuin|icudt\d*|msvcp140(?:_\d+)?|vcruntime140(?:_1)?|concrt140)\.dll\b'
+          if ($imports -match $forbiddenRuntime) {
+            throw "Portable executable still imports an optional ICU or VC++ runtime DLL.`n$imports"
+          }
+          if ((Get-Item $zip).Length -lt 1MB) {
+            throw "Portable ZIP is unexpectedly small."
+          }
           "PORTABLE_ZIP=$zip" >> $env:GITHUB_OUTPUT
 
       - name: Upload portable Windows package

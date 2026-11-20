@@ -3,7 +3,7 @@ use std::path::PathBuf;
 fn main() {
     // libjpeg-turbo 3.2.0 SIMD 静态库由 scripts/build-turbojpeg.bat 构建到
     // <repo>/build-turbo/turbojpeg-static.lib（NASM AVX2/SSE2 汇编全量编入，
-    // WITH_CRT_DLL=ON 动态 CRT，与 Rust 的 /MD 匹配）。
+    // WITH_CRT_DLL=OFF 静态 CRT，与 Rust /MT 及 unrar_sys 保持一致）。
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let libjpeg_root = manifest_dir
         .parent()

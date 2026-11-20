@@ -3,5 +3,7 @@
 pub mod archive;
 pub mod dirtree;
 pub mod scanner;
+pub mod scheduler;
+pub mod task;
 pub mod turbo;
 pub mod win32;
