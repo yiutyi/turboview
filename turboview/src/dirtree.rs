@@ -335,10 +335,11 @@ impl DirTree {
         }
         let alive: Vec<bool> = self.nodes.iter().map(|node| node.alive).collect();
         self.nodes[parent_id].children.retain(|&id| alive[id]);
+        let node_count_before_add = self.nodes.len();
         for path in subdirs {
             self.ensure_dir(path);
         }
-        if !removed_roots.is_empty() || !subdirs.is_empty() {
+        if !removed_roots.is_empty() || self.nodes.len() != node_count_before_add {
             self.dirty = true;
         }
         removed_roots
