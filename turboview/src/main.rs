@@ -2911,8 +2911,6 @@ impl Render for ImageViewer {
         let mut badges: Vec<AnyElement> = Vec::new();
 
         // 状态栏只显示无文字图标；状态信息仍由主视图和侧栏承载。
-        let mut badges: Vec<AnyElement> = Vec::new();
-
         // 压缩包浏览信息
         if self.archive_info.is_some() {
             badges.push(
@@ -2931,12 +2929,11 @@ impl Render for ImageViewer {
                             .h(px(15.0))
                             .flex_shrink_0(),
                     )
-                    .child("" )
                     .into_any_element(),
             );
         }
         // 随机模式开关：常驻显示（开/关都可见），点击即切换。
-        // 开启时用正常文字色，关闭时降到 disabled 色；无任何背景色块。
+        // 开启时用正常图标色，关闭时降到 disabled 色；无任何背景色块。
         badges.push(
             div()
                 .h(px(18.0))
@@ -3226,15 +3223,6 @@ fn looks_like_jpeg(path: &Path) -> bool {
             .as_deref(),
         Some("jpg") | Some("jpeg")
     )
-}
-
-/// 毫秒格式化：超过 1 秒就换单位，状态栏宽度有限
-fn fmt_ms(ms: f64) -> String {
-    if ms >= 1000.0 {
-        format!("{:.2} s", ms / 1000.0)
-    } else {
-        format!("{:.1} ms", ms)
-    }
 }
 
 /// libjpeg 的"数据没走完"类错误：文件被截断，或还在下载/拷贝中。
