@@ -991,7 +991,7 @@ impl ImageViewer {
                             *g = None;
                         }
                         if let Some(p) = view.images.get(view.index) {
-                            view.spawn_load_now(p.to_path_buf(), true, cx);
+                            view.spawn_load(p.to_path_buf(), true, cx);
                         }
                     }
                 }
