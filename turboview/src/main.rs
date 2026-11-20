@@ -585,6 +585,14 @@ impl ImageViewer {
         self.reveal_current_dir();
         let path = self.images[self.index].to_path_buf();
 
+        // Navigation is a priority boundary: keep work for the newly selected
+        // image, cancel obsolete decodes, and discard stale queued prefetches.
+        // The decoder itself may finish its current native call, but its token
+        // prevents retries/result publication and frees the logical slot now.
+        self.active_tasks.cancel_where(|active| active != &path);
+        self.in_flight.retain(|active| active == &path);
+        self.prefetch_queue.clear_pending();
+
         // 冷启动：预热线程可能已经把这张图解好了（与 UI 初始化并行），
         // 认领后直接走下面的缓存命中分支，连一次异步往返都省掉
         if self.preload_waiting {
