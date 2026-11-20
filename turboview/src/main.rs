@@ -350,6 +350,7 @@ struct ImageViewer {
     /// 是否有 ROI 解码在途（在途时只更新 roi_wanted，完成后重评）
     roi_inflight: bool,
     /// 原生 ROI 解码不可中断；跨图时保持 busy，避免新旧大块解码重叠。
+    /// 请求采用 latest-wins：旧 worker 退出后只交接最新视口区域。
     roi_worker_busy: bool,
     /// 状态栏操作反馈（复制/删除等），切图时清除
     note: Option<String>,
