@@ -1194,8 +1194,9 @@ impl ImageViewer {
                     // 用户可能在旧任务取消后又选回同一路径，或切换了解码模式。
                     // 等旧原生调用真正退出后再启动新一代，避免同路径解码重叠。
                     // 当前图先占位，再补发低优先级预取。
-                    if view.current_path() == Some(&path) {
-                        view.spawn_load_now(path.clone(), true, cx);
+                    let cached = view.cache.iter().any(|(cached_path, _)| cached_path == &path);
+                    if view.current_path() == Some(&path) && !cached {
+                        view.spawn_load(path.clone(), true, cx);
                     } else {
                         view.pump_prefetch_queue(cx);
                     }
