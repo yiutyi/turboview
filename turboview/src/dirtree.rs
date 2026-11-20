@@ -321,7 +321,7 @@ impl DirTree {
                 node.name_lower = Arc::from("");
                 node.path = Arc::from(PathBuf::new());
                 node.parent = None;
-                node.children.clear();
+                node.children = Vec::new();
                 node.scanned = false;
                 node.loading = false;
                 node.image_count = 0;
@@ -329,6 +329,9 @@ impl DirTree {
                 node.first_image = None;
                 node.expanded = false;
             }
+        }
+        if self.by_path.len().saturating_mul(2) < self.by_path.capacity() {
+            self.by_path.shrink_to_fit();
         }
         let alive: Vec<bool> = self.nodes.iter().map(|node| node.alive).collect();
         self.nodes[parent_id].children.retain(|&id| alive[id]);
