@@ -219,7 +219,10 @@ mod tests {
         scheduler.schedule(1, TaskPriority::Prefetch);
         scheduler.schedule(2, TaskPriority::Current);
         scheduler.retain_pending(|key| *key != 1);
-        assert_eq!(scheduler.pop_pending(), Some(2));
+        assert_eq!(
+            scheduler.pop_pending_with_priority(),
+            Some((2, TaskPriority::Current))
+        );
         assert_eq!(scheduler.pop_pending(), None);
     }
 
