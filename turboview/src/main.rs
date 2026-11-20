@@ -655,14 +655,10 @@ impl ImageViewer {
         }
 
         if self.in_flight.contains(&path) {
-            if self.active_tasks.token(&path).is_some_and(|token| token.is_active()) {
-                // 这张图可能是预取任务：保留它并让完成回调直接上屏。
-                self.thumb_gen += 1;
-                cx.notify();
-                return;
-            }
-            // 旧一代任务已取消但底层解码调用尚未返回；启动新一代时由
-            // TaskRegistry 身份校验阻止旧回调清理新任务的 in_flight 状态。
+            // 原生解码调用仍占用 worker。无论它是预取还是已取消任务，都不
+            // 启动同路径的第二份解码；若已取消且用户又选回此图，完成回调会重启。
+            cx.notify();
+            return;
         }
 
         // 缓存未命中：不清掉 current —— 上一张保持显示直到新图解码完成，
@@ -815,7 +811,6 @@ impl ImageViewer {
         let cur_gone = cur.as_ref().is_some_and(|p| belongs(p));
         self.images.retain(|p| !belongs(p));
         self.cache.retain(|(p, _)| !belongs(p));
-        self.in_flight.retain(|p| !belongs(p));
         for a in &removed {
             if archive::is_archive(a) {
                 self.archive_expanded.remove(a);
@@ -1189,6 +1184,11 @@ impl ImageViewer {
                 view.in_flight.retain(|p| p != &path);
                 view.pump_prefetch_queue(cx);
                 if !cancellation.is_active() {
+                    // 用户可能在旧任务取消后又选回同一路径，或切换了解码模式。
+                    // 等旧原生调用真正退出后再启动新一代，避免同一路径解码重叠。
+                    if view.current_path() == Some(&path) {
+                        view.spawn_load_now(path.clone(), true, cx);
+                    }
                     cx.notify();
                     return;
                 }
@@ -1371,7 +1371,6 @@ impl ImageViewer {
         self.current = None;
         self.error = None;
         self.cache.clear();
-        self.in_flight.clear();
         self.active_tasks.cancel_where(|_| true);
         self.prefetch_queue.clear_pending();
         self.thumb_gen += 1;
@@ -1734,7 +1733,6 @@ impl ImageViewer {
         self.decode_gen += 1;
         self.thumb_gen += 1; // 同时作废旧 fast 模式的预览帧
         self.cache.clear();
-        self.in_flight.clear();
         self.active_tasks.cancel_where(|_| true);
         self.prefetch_queue.clear_pending();
         let index = self.index;
@@ -2014,7 +2012,6 @@ impl ImageViewer {
             Ok(()) => {
                 self.cache.retain(|(p, _)| p != &path);
                 self.active_tasks.cancel(&path);
-                self.in_flight.retain(|p| p != &path);
                 if let Some(i) = self.find_image_index(&path) {
                     self.images.remove(i);
                 }
