@@ -766,9 +766,9 @@ impl ImageViewer {
         level: turboview::scanner::DirLevel,
         cx: &mut Context<Self>,
     ) {
-        let Some(id) = self.tree.lookup(dir) else {
+        if self.tree.lookup(dir).is_none() {
             return;
-        };
+        }
         let turboview::scanner::DirLevel {
             subdirs,
             images,
