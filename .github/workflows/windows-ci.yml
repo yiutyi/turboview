@@ -87,11 +87,14 @@ jobs:
           Copy-Item (Join-Path $env:GITHUB_WORKSPACE "LICENSE.md") (Join-Path $dist "LIBJPEG-TURBO-LICENSE.md")
           Copy-Item (Join-Path $env:GITHUB_WORKSPACE "README.ijg") (Join-Path $dist "README.ijg")
           Copy-Item (Join-Path $env:GITHUB_WORKSPACE "turboview\CHANGELOG.md") $dist
+          $manifest = Join-Path $env:GITHUB_WORKSPACE "turboview\Cargo.toml"
+          $version = (Select-String -Path $manifest -Pattern '^version\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+          if (!$version) { throw "Unable to read version from Cargo.toml" }
           @"
-          TurboView 0.2.0 - Windows x64 Portable
+          TurboView $version - Windows x64 Portable
           ======================================
 
-          Version: 0.2.0
+          Version: $version
           Commit: $env:GITHUB_SHA
 
           Run turboview.exe directly. No Rust or Cargo installation is required.
