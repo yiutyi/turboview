@@ -2356,12 +2356,10 @@ impl ImageViewer {
             }
         }
 
-        // 侧边栏专用派生色：gpui 基础色板只有 8 个色，
-        // 缩进参考线与悬停底需要额外的中间色
-        let (guide, hover_bg) = if self.dark_mode {
-            (gpui::rgba(0xFFFFFF1E), gpui::rgba(0xFFFFFF12))
+        let hover_bg = if self.dark_mode {
+            gpui::rgba(0xFFFFFF12)
         } else {
-            (gpui::rgba(0x00000018), gpui::rgba(0x0000000D))
+            gpui::rgba(0x0000000D)
         };
 
         // 工具栏小图标按钮（20x20 点按区）。
@@ -2370,8 +2368,8 @@ impl ImageViewer {
         let tool = |glyph: &'static str, id: (&'static str, usize)| {
             div()
                 .id(id)
-                .w(px(20.0))
-                .h(px(20.0))
+                .w(px(24.0))
+                .h(px(24.0))
                 .flex_shrink_0()
                 .flex()
                 .items_center()
@@ -2488,45 +2486,11 @@ impl ImageViewer {
                                 let has_toggle =
                                     row.has_children || !row.scanned || row.loading;
 
-                                // 层级连接线（资源管理器/VS Code 风格）：
-                                // 非最后子节点的竖线贯穿整行；最后子节点的止于行中点，
-                                // 并在本层补一条横线，形成 ├ / └ 的层级关系。
-                                let mut indent = div().h_full().flex_shrink_0().flex().flex_row();
-                                let depth = row.depth.min(63) as usize;
-                                for level in 0..depth {
-                                    let ancestor_last = (row.last_flags >> level) & 1 == 1;
-                                    let cell = div()
-                                        .relative()
-                                        .w(px(TREE_INDENT))
-                                        .h_full()
-                                        .flex_shrink_0()
-                                        .flex()
-                                        .justify_center()
-                                        .child(
-                                            div()
-                                                .w(px(1.0))
-                                                .h(if ancestor_last {
-                                                    px(ROW_HEIGHT / 2.0)
-                                                } else {
-                                                    px(ROW_HEIGHT)
-                                                })
-                                                .bg(guide),
-                                        );
-                                    let cell = if level + 1 == depth {
-                                        cell.child(
-                                            div()
-                                                .absolute()
-                                                .left(px(TREE_INDENT / 2.0))
-                                                .top(px(ROW_HEIGHT / 2.0))
-                                                .w(px(TREE_INDENT / 2.0))
-                                                .h(px(1.0))
-                                                .bg(guide),
-                                        )
-                                    } else {
-                                        cell
-                                    };
-                                    indent = indent.child(cell);
-                                }
+                                // 简洁缩进：不画贯穿整行的连接线，避免深层目录显得拥挤。
+                                let indent = div()
+                                    .w(px(TREE_INDENT * row.depth.min(24) as f32))
+                                    .h_full()
+                                    .flex_shrink_0();
 
                                 // 计数/次要文字用淡色；箭头用正文色 + 透明度，更接近资源管理器
                                 let fg = if is_selected {
