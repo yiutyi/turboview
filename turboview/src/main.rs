@@ -3627,6 +3627,16 @@ fn make_logo_image() -> Arc<RenderImage> {
 }
 
 fn main() {
+    // GUI builds have no console. Preserve panic details so startup failures
+    // remain diagnosable without forcing trace logging in normal releases.
+    std::panic::set_hook(Box::new(|info| {
+        use std::io::Write;
+        let path = std::env::temp_dir().join("turboview-startup.log");
+        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+            let _ = writeln!(file, "[PANIC] {info}");
+            let _ = writeln!(file, "[BACKTRACE] {}", std::backtrace::Backtrace::force_capture());
+        }
+    }));
     trace("entry");
     // 必须第一个调用：PerMonitorV2 DPI 感知。否则 125%+ 缩放的屏幕上
     // 窗口按 1:1 物理像素渲染，“最大化”只占屏幕左上角一小块。
