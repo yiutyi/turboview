@@ -2362,7 +2362,7 @@ impl ImageViewer {
             gpui::rgba(0x0000000D)
         };
 
-        // 工具栏小图标按钮（20x20 点按区）。
+        // 工具栏小图标按钮（24x24 点按区）。
         // 图标用文字字形而非 SVG：gpui_windows 未实现 SvgRenderer，
         // svg() 元素在这套后端上画不出任何东西（状态栏那组图标同理）。
         let tool = |glyph: &'static str, id: (&'static str, usize)| {
