@@ -6,7 +6,7 @@ use windows::{
     Win32::{
         Foundation::*,
         Graphics::Gdi::*,
-        System::{LibraryLoader::*, SystemServices::*},
+        System::SystemServices::*,
         UI::{
             Controls::*,
             HiDpi::*,
@@ -14,7 +14,7 @@ use windows::{
             WindowsAndMessaging::*,
         },
     },
-    core::{s, w, PCWSTR},
+    core::PCWSTR,
 };
 
 use crate::*;
@@ -793,7 +793,7 @@ impl WindowsWindowInner {
             let result = DefWindowProcW(handle, WM_NCCALCSIZE, wparam, lparam);
             (*params).rgrc[0].top = saved_top;
             if self.state.is_maximized() {
-                let dpi = get_window_dpi(handle);
+                let dpi = GetDpiForWindow(handle);
                 (*params).rgrc[0].top += get_frame_thicknessx(dpi);
             }
             Some(result.0 as isize)
@@ -992,7 +992,7 @@ impl WindowsWindowInner {
             return drag_area;
         }
 
-        let dpi = unsafe { get_window_dpi(handle) };
+        let dpi = unsafe { GetDpiForWindow(handle) };
         // We do not use the OS title bar, so the default `DefWindowProcW` will only register a 1px edge for resizes
         // We need to calculate the frame thickness ourselves and do the hit test manually.
         let frame_y = get_frame_thicknessx(dpi);
@@ -1772,51 +1772,19 @@ pub(crate) fn current_capslock() -> Capslock {
     Capslock { on }
 }
 
-// Resolve Windows 10 1607 DPI APIs dynamically so the executable can still
-// load on older Windows 10 releases (including version 1511).
-fn user32_proc(name: windows::core::PCSTR) -> Option<unsafe extern "system" fn() -> isize> {
-    unsafe {
-        let module = GetModuleHandleW(w!("user32.dll")).ok()?;
-        GetProcAddress(module, name)
-    }
-}
-
-fn get_window_dpi(handle: HWND) -> u32 {
-    if let Some(proc) = user32_proc(s!("GetDpiForWindow")) {
-        let get_dpi: unsafe extern "system" fn(HWND) -> u32 = unsafe { std::mem::transmute(proc) };
-        let dpi = unsafe { get_dpi(handle) };
-        if dpi != 0 {
-            return dpi;
-        }
-    }
-    USER_DEFAULT_SCREEN_DPI
-}
-
-fn get_system_metrics_for_dpi(index: SYSTEM_METRICS_INDEX, dpi: u32) -> i32 {
-    if let Some(proc) = user32_proc(s!("GetSystemMetricsForDpi")) {
-        let get_metrics: unsafe extern "system" fn(SYSTEM_METRICS_INDEX, u32) -> i32 =
-            unsafe { std::mem::transmute(proc) };
-        return unsafe { get_metrics(index, dpi) };
-    }
-
-    // Pre-1607 fallback: scale the system-DPI metric to the window DPI.
-    let system_value = unsafe { GetSystemMetrics(index) };
-    ((system_value as f64 * dpi as f64 / USER_DEFAULT_SCREEN_DPI as f64).round()) as i32
-}
-
 // there is some additional non-visible space when talking about window
 // borders on Windows:
 // - SM_CXSIZEFRAME: The resize handle.
 // - SM_CXPADDEDBORDER: Additional border space that isn't part of the resize handle.
 fn get_frame_thicknessx(dpi: u32) -> i32 {
-    let resize_frame_thickness = get_system_metrics_for_dpi(SM_CXSIZEFRAME, dpi);
-    let padding_thickness = get_system_metrics_for_dpi(SM_CXPADDEDBORDER, dpi);
+    let resize_frame_thickness = unsafe { GetSystemMetricsForDpi(SM_CXSIZEFRAME, dpi) };
+    let padding_thickness = unsafe { GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi) };
     resize_frame_thickness + padding_thickness
 }
 
 fn get_frame_thicknessy(dpi: u32) -> i32 {
-    let resize_frame_thickness = get_system_metrics_for_dpi(SM_CYSIZEFRAME, dpi);
-    let padding_thickness = get_system_metrics_for_dpi(SM_CXPADDEDBORDER, dpi);
+    let resize_frame_thickness = unsafe { GetSystemMetricsForDpi(SM_CYSIZEFRAME, dpi) };
+    let padding_thickness = unsafe { GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi) };
     resize_frame_thickness + padding_thickness
 }
 

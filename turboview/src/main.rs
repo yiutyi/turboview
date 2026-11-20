@@ -3627,8 +3627,8 @@ fn make_logo_image() -> Arc<RenderImage> {
 }
 
 fn main() {
-    // GUI builds have no console; preserve startup failures for diagnosis on
-    // older Windows systems where a panic would otherwise look like a silent exit.
+    // GUI builds have no console. Preserve panic details so startup failures
+    // remain diagnosable without forcing trace logging in normal releases.
     std::panic::set_hook(Box::new(|info| {
         use std::io::Write;
         let path = std::env::temp_dir().join("turboview-startup.log");
@@ -3863,9 +3863,8 @@ fn main() {
 // 正式运行时零开销（一次环境变量查询），用于定位冷启动各阶段耗时。
 // ---------------------------------------------------------------------------
 fn trace_enabled() -> bool {
-    // Keep a tiny startup trace in GUI builds: without a console, silent
-    // platform/window initialization failures are otherwise hard to diagnose.
-    true
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("TV_TRACE").is_some())
 }
 
 fn trace(msg: &str) {

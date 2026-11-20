@@ -124,11 +124,10 @@ impl WindowsWindowState {
         invalidate_devices: Arc<AtomicBool>,
         draw_coordinator: Rc<DrawCoordinator>,
     ) -> Result<Self> {
-        // GetDpiForWindow was introduced in Windows 10 version 1607.
-        // Use the already-resolved monitor scale instead: GPUI obtains it through
-        // GetDpiForMonitor (Shcore), which is available on Windows 8.1 and later.
-        // This avoids a static user32 import that prevents startup on Windows 10 1511.
-        let scale_factor = display.scale_factor();
+        let scale_factor = {
+            let monitor_dpi = unsafe { GetDpiForWindow(hwnd) } as f32;
+            monitor_dpi / USER_DEFAULT_SCREEN_DPI as f32
+        };
         let origin = logical_point(window_params.x as f32, window_params.y as f32, scale_factor);
         let logical_size = {
             let physical_size = size(
