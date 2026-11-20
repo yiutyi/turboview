@@ -70,9 +70,9 @@ actions!(
 /// 侧边栏宽度（像素）
 const SIDEBAR_WIDTH: f32 = 280.0;
 /// 侧边栏行高
-const ROW_HEIGHT: f32 = 25.0;
+const ROW_HEIGHT: f32 = 28.0;
 /// 目录树每级缩进宽度
-const TREE_INDENT: f32 = 12.0;
+const TREE_INDENT: f32 = 14.0;
 
 /// 解码输出的最长边上限。实际值按**窗口物理尺寸**自适应（见
 /// `ImageViewer::decode_max_dim`）：1366×768 的机器只需要 ~1500，
@@ -2346,7 +2346,7 @@ impl ImageViewer {
         };
 
         let header = div()
-            .h(px(32.0))
+            .h(px(36.0))
             .flex_shrink_0()
             .flex()
             .items_center()
@@ -2361,7 +2361,7 @@ impl ImageViewer {
                     .min_w_0()
                     .text_xs()
                     .text_color(colors.disabled)
-                    .child("目录树"),
+                    .child("文件夹"),
             )
             .child(
                 tool("⟳", ("tv-tool-refresh", 0)).on_click(cx.listener(
@@ -2393,7 +2393,7 @@ impl ImageViewer {
             .items_center()
             .gap(px(6.0))
             .px_2()
-            .py(px(3.0))
+            .py(px(5.0))
             .border_b_1()
             .border_color(colors.border)
             .text_xs()
@@ -2582,9 +2582,9 @@ impl ImageViewer {
                                     .w_full()
                                     .flex()
                                     .items_center()
-                                    .pl(px(4.0))
-                                    .pr(px(6.0))
-                                    .mx(px(3.0))
+                                    .pl(px(6.0))
+                                    .pr(px(8.0))
+                                    .mx(px(4.0))
                                     .rounded_md()
                                     .text_sm()
                                     .cursor_pointer()
@@ -2727,7 +2727,7 @@ impl ImageViewer {
                         .flex_shrink_0()
                         .flex()
                         .items_center()
-                        .child(if kind == 1 { "💾" } else { "📁" }),
+                        .child(if kind == 1 { "▰" } else { "▱" }),
                 )
                 .child(
                     div()
@@ -2907,91 +2907,14 @@ impl Render for ImageViewer {
             );
         }
 
-        // ---------- 状态栏 ----------
-        let scan_note = if self.pending_levels > 0 {
-            " · ⏳ 扫描中".to_string()
-        } else {
-            String::new()
-        };
-        let (left_text, right_text) = match (&self.current, &self.error) {
-            (Some(image), _) => {
-                // 压缩包条目显示 "包名 › 条目名"，本地文件显示文件名
-                let name = self
-                    .current_path()
-                    .map(|p| display_name(p))
-                    .unwrap_or_default();
-                // 原图尺寸按显示方向报告（EXIF 旋转后宽高互换是正常的）
-                let (sw, sh) =
-                    turbo::oriented_dims(image.orientation, image.src_width, image.src_height);
-                let scaled = image.width != sw || image.height != sh;
-                let dims = if scaled {
-                    format!("尺寸 {} × {}（原图 {} × {}）", image.width, image.height, sw, sh)
-                } else {
-                    format!("尺寸 {} × {}", image.width, image.height)
-                };
-                let left = format!(
-                    "[{}/{}]  {}  {}",
-                    self.index + 1,
-                    self.images.len(),
-                    name,
-                    dims
-                );
-                let zoom_pct = (self.effective_zoom * 100.0).round() as i32;
-                let perf = if image.preloaded {
-                    // 冷启动预热：解码发生在 UI 初始化期间，用户没等它。
-                    // 网络盘上这一坨里大半是缺页读取，标出来免得以为是解码慢
-                    format!(
-                        "解码 {}{} · 启动预热",
-                        fmt_ms(image.decode_ms),
-                        if image.decode_ms >= 500.0 { "（含读取）" } else { "" }
-                    )
-                } else if image.preview {
-                    // 首帧预览：说明当前是快解码结果，全质量帧马上覆盖
-                    format!("预览 {}", fmt_ms(image.decode_ms))
-                } else if image.cached {
-                    "缓存命中".to_string()
-                } else if image.read_ms < 80.0 && image.decode_ms >= 500.0 {
-                    // mmap 路径：磁盘/网络的读取摊在解码的缺页里，read_ms 近似 0。
-                    // 这种"解码"其实大半是在等字节，标清楚免得误会解码器
-                    format!(
-                        "解码 {} · 含读取{}",
-                        fmt_ms(image.decode_ms),
-                        if image.fast { " · 快速" } else { "" }
-                    )
-                } else if image.read_ms >= 80.0 {
-                    // 网络盘/机械盘上读字节比解码慢一个量级：分开报，
-                    // 否则一个 1.3 s 的"解码"看着像解码器太慢（其实是网速）
-                    format!(
-                        "读取 {} + 解码 {}{}",
-                        fmt_ms(image.read_ms),
-                        fmt_ms(image.decode_ms),
-                        if image.fast { " · 快速" } else { "" }
-                    )
-                } else {
-                    format!(
-                        "解码 {}{}",
-                        fmt_ms(image.decode_ms),
-                        if image.fast { " · 快速" } else { "" }
-                    )
-                };
-                let right = format!("缩放 {}% · {}", zoom_pct, perf);
-                (left, right)
-            }
-            (None, Some(err)) => ("解码失败".to_string(), err.clone()),
-            (None, None) => (
-                format!("{} 张图片", self.images.len()),
-                "左键下一张 · 右键上一张 · 滚轮翻页 · Ctrl+滚轮缩放 · ESC 全屏切换 · Del 删除 · Ctrl+C 复制 · Ctrl+Shift+C 路径 · Ctrl+E 定位 · R 随机 · S 幻灯 · B 侧边栏 · F5 刷新 · T 主题 · 0 适应 · 1 原图 · Shift+F 快速 · Q 退出 · 支持 zip/7z/rar 压缩包"
-                    .to_string(),
-            ),
-        };
-        let right_text = format!("{}{}", right_text, scan_note);
+        // ---------- 状态栏：仅保留图标，不显示任何状态文字 ----------
+        let mut badges: Vec<AnyElement> = Vec::new();
 
-        // 状态栏徽标：全部无背景色 —— 文字与单色图标统一取主题文字色
-        // （亮色=黑 / 暗色=白），不引入任何色块，保持状态栏干净。
+        // 状态栏只显示无文字图标；状态信息仍由主视图和侧栏承载。
         let mut badges: Vec<AnyElement> = Vec::new();
 
         // 压缩包浏览信息
-        if let Some(info) = &self.archive_info {
+        if self.archive_info.is_some() {
             badges.push(
                 div()
                     .h(px(18.0))
@@ -3008,7 +2931,7 @@ impl Render for ImageViewer {
                             .h(px(15.0))
                             .flex_shrink_0(),
                     )
-                    .child(info.clone())
+                    .child("" )
                     .into_any_element(),
             );
         }
@@ -3036,11 +2959,6 @@ impl Render for ImageViewer {
                         .h(px(15.0))
                         .flex_shrink_0(),
                 )
-                .child(if self.random_mode {
-                    "随机 开"
-                } else {
-                    "随机 关"
-                })
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|this, _: &MouseDownEvent, _w, cx| {
@@ -3074,11 +2992,6 @@ impl Render for ImageViewer {
                         .h(px(15.0))
                         .flex_shrink_0(),
                 )
-                .child(if self.slideshow {
-                    format!("幻灯 开 {}s", SLIDESHOW_INTERVAL)
-                } else {
-                    "幻灯 关".to_string()
-                })
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|this, _: &MouseDownEvent, _w, cx| {
@@ -3113,11 +3026,6 @@ impl Render for ImageViewer {
                         .h(px(15.0))
                         .flex_shrink_0(),
                 )
-                .child(if self.original_view {
-                    "原图 开"
-                } else {
-                    "原图 关"
-                })
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|this, _: &MouseDownEvent, w, cx| {
@@ -3150,7 +3058,6 @@ impl Render for ImageViewer {
                     .h(px(12.0))
                     .flex_shrink_0(),
                 )
-                .child(if self.dark_mode { "暗色" } else { "亮色" })
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|this, _: &MouseDownEvent, _w, cx| {
@@ -3181,7 +3088,6 @@ impl Render for ImageViewer {
                     .h(px(15.0))
                     .flex_shrink_0(),
                 )
-                .child(if self.fullscreen { "退出全屏" } else { "全屏" })
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|this, _: &MouseDownEvent, _w, cx| {
@@ -3190,23 +3096,6 @@ impl Render for ImageViewer {
                 )
                 .into_any_element(),
         );
-
-        // 最近一次操作反馈
-        if let Some(note) = &self.note {
-            badges.push(
-                div()
-                    .h(px(18.0))
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(4.0))
-                    .px_1()
-                    .text_xs()
-                    .text_color(colors.text)
-                    .child(note.clone())
-                    .into_any_element(),
-            );
-        }
 
         // 目录树开/关按钮始终留在状态栏最左侧，避免按钮随状态消失。
         // B 键与按钮共用 toggle_sidebar，初始隐藏目录树时也能立即恢复。
@@ -3232,7 +3121,6 @@ impl Render for ImageViewer {
                     }),
                 )
                 .child("◧")
-                .child(if self.sidebar_visible { "目录树 开 · B" } else { "目录树 关 · B" })
                 .into_any_element(),
         ];
 
@@ -3259,7 +3147,6 @@ impl Render for ImageViewer {
                     .h(px(17.0))
                     .flex_shrink_0(),
             )
-            .child(left_text)
             .child(
                 div()
                     .flex_1()
@@ -3270,7 +3157,7 @@ impl Render for ImageViewer {
                     .gap(px(6.0))
                     .children(badges.into_iter()),
             )
-            .child(right_text);
+            ;
 
         // ---------- 侧边栏 ----------
         let sidebar = if self.sidebar_visible {
@@ -3754,6 +3641,7 @@ fn main() {
         None => "TurboView".to_string(),
     };
 
+    trace("platform init begin");
     let platform = Rc::new(
         gpui_windows::WindowsPlatform::new(false).expect("初始化 Windows 平台失败"),
     );
@@ -3807,6 +3695,7 @@ fn main() {
             .unwrap_or_else(|| size(px(900.), px(600.)));
         let bounds = Bounds::centered(None, restore, cx);
 
+        trace("open_window begin");
         cx.open_window(
             WindowOptions {
                 // 启动即最大化（bounds 作为还原尺寸记忆）
@@ -3820,6 +3709,7 @@ fn main() {
                 ..Default::default()
             },
             |_, cx| {
+                trace("window entity init begin");
                 cx.new(|cx| {
                     // 打开单张图片（默认看图器场景）时目录树默认收起，只留展开按钮
                     let mut viewer = ImageViewer::new(
@@ -3847,6 +3737,7 @@ fn main() {
                         }
                         None => {}
                     }
+                    trace("window entity init complete");
                     viewer
                 })
             },
@@ -3855,6 +3746,7 @@ fn main() {
         trace("window created");
 
         cx.activate(true);
+        trace("window activated");
     });
 }
 
