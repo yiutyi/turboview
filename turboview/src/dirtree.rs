@@ -330,7 +330,8 @@ impl DirTree {
                 node.expanded = false;
             }
         }
-        self.nodes[parent_id].children.retain(|&id| self.nodes[id].alive);
+        let alive: Vec<bool> = self.nodes.iter().map(|node| node.alive).collect();
+        self.nodes[parent_id].children.retain(|&id| alive[id]);
         for path in subdirs {
             self.ensure_dir(path);
         }
