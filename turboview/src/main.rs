@@ -590,7 +590,6 @@ impl ImageViewer {
         // The decoder itself may finish its current native call, but its token
         // prevents retries/result publication and frees the logical slot now.
         self.active_tasks.cancel_where(|active| active != &path);
-        self.in_flight.retain(|active| active == &path);
         self.prefetch_queue.clear_pending();
 
         // 冷启动：预热线程可能已经把这张图解好了（与 UI 初始化并行），
@@ -653,11 +652,14 @@ impl ImageViewer {
         }
 
         if self.in_flight.contains(&path) {
-            // 这张图可能是预取任务：用户已经导航到它，必须让在途结果
-            // 在完成时直接上屏，而不能把它当作纯缓存预取然后静默返回。
-            self.thumb_gen += 1;
-            cx.notify();
-            return;
+            if self.active_tasks.token(&path).is_some_and(|token| token.is_active()) {
+                // 这张图可能是预取任务：保留它并让完成回调直接上屏。
+                self.thumb_gen += 1;
+                cx.notify();
+                return;
+            }
+            // 旧一代任务已取消但底层解码调用尚未返回；启动新一代时由
+            // TaskRegistry 身份校验阻止旧回调清理新任务的 in_flight 状态。
         }
 
         // 缓存未命中：不清掉 current —— 上一张保持显示直到新图解码完成，
@@ -1176,14 +1178,17 @@ impl ImageViewer {
             }
 
             view.update(cx, |view, cx| {
-                // 只有当前任务代际可以清理 in_flight 并发布结果。
-                // reset / 模式切换 / 删除后的旧回调会在这里无副作用退出。
-                if !cancellation.is_active() || !view.active_tasks.finish(&path, task_id) {
+                // 先按任务身份完成登记。即使任务已取消，也必须在原生解码
+                // 调用返回后释放 in_flight；旧一代不能清理同路径的新一代。
+                if !view.active_tasks.finish(&path, task_id) {
                     return;
                 }
                 view.in_flight.retain(|p| p != &path);
-                // 让位后立刻补发排队中的预取
                 view.pump_prefetch_queue(cx);
+                if !cancellation.is_active() {
+                    cx.notify();
+                    return;
+                }
                 // decode_gen 变化：模式切换已作废旧解码，连缓存都不写入
                 if view.decode_gen != dec_gen {
                     cx.notify();
