@@ -123,6 +123,15 @@ impl<K: Clone + Eq + Hash> TaskRegistry<K> {
         count
     }
 
+    /// Cancel and remove every registered task. Used on full viewer reset:
+    /// no in-flight result may publish or clear freshly created state.
+    pub fn clear(&mut self) {
+        for task in self.active.values() {
+            task.cancellation.cancel();
+        }
+        self.active.clear();
+    }
+
     /// Remove a completed task only if it is still the registered generation.
     pub fn finish(&mut self, key: &K, id: TaskId) -> bool {
         if self.active.get(key).is_some_and(|task| task.id == id) {

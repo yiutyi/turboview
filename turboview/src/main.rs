@@ -283,10 +283,8 @@ struct ImageViewer {
     cache_budget: usize,
     /// 缓存条目上限（按预算推导）
     cache_max_entries: usize,
-    /// 预取并发上限；始终为当前图保留一个额外解码槽。
+    /// 预取并发上限；当前图独立解码，不计入此上限。
     max_prefetch_tasks: usize,
-    /// 包含当前图在内的总解码并发硬上限。
-    max_decode_tasks: usize,
     /// 有界优先级预取队列；执行中的任务仍由 in_flight 跟踪
     prefetch_queue: TaskScheduler<PathBuf>,
     /// 最近一次渲染的视口物理尺寸 (w, h)：解码尺寸按它自适应
@@ -349,11 +347,8 @@ struct ImageViewer {
     roi_wanted: Option<RoiRect>,
     /// ROI 请求代际（防抖 + 过期结果丢弃）
     roi_gen: u64,
-    /// 是否有 ROI 解码在途（在途时只更新 roi_wanted，完成后重评）
+    /// 是否有 ROI 解码在途（仅用于避免无谓重发；不阻塞新请求）
     roi_inflight: bool,
-    /// 原生 ROI 解码不可中断；跨图时保持 busy，避免新旧大块解码重叠。
-    /// 请求采用 latest-wins：旧 worker 退出后只交接最新视口区域。
-    roi_worker_busy: bool,
     /// 状态栏操作反馈（复制/删除等），切图时清除
     note: Option<String>,
     /// 压缩包浏览信息（"📦 包名 › N 张"），跟随当前图：在包内才显示
@@ -440,7 +435,6 @@ impl ImageViewer {
             cache_budget,
             cache_max_entries,
             max_prefetch_tasks,
-            max_decode_tasks: max_prefetch_tasks + 1,
             prefetch_queue: TaskScheduler::new(16, 1),
             viewport_px,
             thumb_gen: 0,
@@ -473,7 +467,6 @@ impl ImageViewer {
             roi_wanted: None,
             roi_gen: 0,
             roi_inflight: false,
-            roi_worker_busy: false,
             note: None,
             archive_info: None,
             archive_expanded: HashSet::new(),
@@ -597,7 +590,17 @@ impl ImageViewer {
         // The decoder itself may finish its current native call; its token
         // prevents retries/result publication and the slot stays occupied until return.
         self.active_tasks.cancel_where(|active| active != &path);
-        self.prefetch_queue.clear_pending();
+        // 保留当前图 ±3 的预取项，只丢弃更远/失效的。0.2 每次翻页 clear_pending
+        // 让预取永远做无用功：刚排上队就被下一次翻页清掉。与 prefetch() 的
+        // 保留策略一致（images 按路径有序，用二分定位）。
+        {
+            let idx_now = self.index;
+            let imgs = &self.images;
+            self.prefetch_queue.retain_pending(|p| {
+                let i = imgs.partition_point(|x| x.as_ref() < p.as_path());
+                i < imgs.len() && imgs[i].as_ref() == p.as_path() && i.abs_diff(idx_now) <= 3
+            });
+        }
 
         // 冷启动：预热线程可能已经把这张图解好了（与 UI 初始化并行），
         // 认领后直接走下面的缓存命中分支，连一次异步往返都省掉
@@ -1006,13 +1009,12 @@ impl ImageViewer {
     /// 预取受并发上限约束：满了排队，解码完成回调里再补位。
     fn spawn_load(&mut self, path: PathBuf, set_current: bool, cx: &mut Context<Self>) {
         if set_current {
-            if self.in_flight.len() >= self.max_decode_tasks {
-                // 原生解码不可抢占：当前图进入最高优先级队列，等待一个真实 worker 槽释放。
-                self.prefetch_queue.schedule(path, TaskPriority::Current);
-            } else {
-                self.prefetch_queue.cancel_pending(|queued| queued == &path);
-                self.spawn_load_now(path, true, cx);
-            }
+            // 当前图永远立即解码，不受预取并发上限约束。0.2 把它塞进队列等
+            // worker 是"下一张变慢"的直接原因。goto / 取消回调都已保证走到
+            // 这里时 in_flight 不含此路径，无需重复守卫（那会让已取消的在途
+            // 任务无法重启，且同路径回调互相阻塞）。
+            self.prefetch_queue.cancel_pending(|queued| queued == &path);
+            self.spawn_load_now(path, true, cx);
             return;
         }
         if self.in_flight.contains(&path) {
@@ -1025,24 +1027,26 @@ impl ImageViewer {
         self.spawn_load_now(path, false, cx);
     }
 
-    /// 并发有空位时补发排队中的预取任务
+    /// 并发有空位时补发排队中的预取任务。
+    /// 只对"预取"计数，不含当前图：当前图总是立即解码，不该被预取占满的槽位挡住。
     fn pump_prefetch_queue(&mut self, cx: &mut Context<Self>) {
-        while self.in_flight.len() < self.max_decode_tasks {
-            let Some((next, priority)) = self.prefetch_queue.pop_pending_with_priority() else {
+        // in_flight 同时含当前图，先减掉它再看预取是否有空位。
+        let cur_path = self.current_path().map(Path::to_path_buf);
+        let in_flight_prefetch = self
+            .in_flight
+            .iter()
+            .filter(|p| cur_path.as_ref() != Some(*p))
+            .count();
+        let mut slots = self.max_prefetch_tasks.saturating_sub(in_flight_prefetch);
+        while slots > 0 {
+            let Some((next, _priority)) = self.prefetch_queue.pop_pending_with_priority() else {
                 break;
             };
-            // Keep one worker slot reserved for a newly selected image. A queued
-            // Current task may use it; Prefetch work may not.
-            if priority == TaskPriority::Prefetch
-                && self.in_flight.len() >= self.max_prefetch_tasks
-            {
-                self.prefetch_queue.schedule(next, priority);
-                break;
-            }
             if self.cache.iter().any(|(p, _)| *p == next) || self.in_flight.contains(&next) {
                 continue;
             }
             self.spawn_load_now(next, false, cx);
+            slots -= 1;
         }
     }
 
@@ -1313,10 +1317,8 @@ impl ImageViewer {
         // 的流，用户一按"下一张"就得排在它们后面等好几秒。
         // 收紧成"单线程 + 只取下一张"，把带宽留给用户真正要看的那张。
         let slow_source = self.on_remote() || self.rotational;
-        self.max_decode_tasks = self.max_prefetch_tasks + 1;
         if slow_source {
             self.max_prefetch_tasks = 1;
-            self.max_decode_tasks = self.max_prefetch_tasks + 1;
             self.prefetch_queue.clear_pending();
         }
         // 快速连翻时队列会积压，丢掉离当前位置超过 3 张的过期项
@@ -1393,7 +1395,10 @@ impl ImageViewer {
         self.current = None;
         self.error = None;
         self.cache.clear();
-        self.active_tasks.cancel_where(|_| true);
+        // cancel 只置取消位、任务仍留在 active map 与 in_flight 里占槽。
+        // 切根目录必须两者都清空，否则新目录的图会因"in_flight 已满"排队。
+        self.active_tasks.clear();
+        self.in_flight.clear();
         self.prefetch_queue.clear_pending();
         self.thumb_gen += 1;
         self.slideshow = false;
@@ -1755,7 +1760,8 @@ impl ImageViewer {
         self.decode_gen += 1;
         self.thumb_gen += 1; // 同时作废旧 fast 模式的预览帧
         self.cache.clear();
-        self.active_tasks.cancel_where(|_| true);
+        self.active_tasks.clear();
+        self.in_flight.clear();
         self.prefetch_queue.clear_pending();
         let index = self.index;
         self.goto(index, cx);
@@ -1944,17 +1950,19 @@ impl ImageViewer {
         let want = self.compute_roi_rect(zoom_now, img_offset, area_w, vp_h);
         self.roi_wanted = want.clone();
         if let Some(r) = want {
-            if !self.roi_inflight && !self.roi_covers(&r) {
+            // 被覆盖就不解码（打断静止画面的重解码循环）。未被覆盖时即使
+            // 上一个 ROI 还在途也允许抢占：新的 gen 会让旧结果作废。
+            if !self.roi_covers(&r) {
                 self.roi_kick(cx);
             }
         }
     }
 
     /// 派发一次 ROI 解码（背景线程 → 150ms 防抖 → 解码 → 代际校验 → 上屏）
+    ///
+    /// latest-wins：每次请求都递增代际并派发，旧请求在防抖结束时发现代际
+    /// 已落后就直接退出，不占用解码器。不再有"一个 busy worker 串行等待"。
     fn roi_kick(&mut self, cx: &mut Context<Self>) {
-        if self.roi_inflight || self.roi_worker_busy {
-            return;
-        }
         let Some(rect) = self.roi_wanted.clone() else { return };
         let Some(path) = self.current_path().map(Path::to_path_buf) else { return };
         // 压缩包条目：decode_jpeg_roi 需要本地文件，直接跳过
@@ -1963,7 +1971,6 @@ impl ImageViewer {
         }
         let Some(cur) = self.current.as_ref() else { return };
         self.roi_inflight = true;
-        self.roi_worker_busy = true;
         self.roi_gen += 1;
         let gen_id = self.roi_gen;
         let orientation = cur.orientation;
@@ -1974,6 +1981,14 @@ impl ImageViewer {
 
         cx.spawn(async move |view: WeakEntity<Self>, cx: &mut AsyncApp| {
             cx.background_executor().timer(ROI_DEBOUNCE).await;
+            // 防抖期内已被新请求抢占：直接退出，不占解码器。这是抢占相对
+            // 串行的关键收益——快速缩放/平移时只解最后一帧区域的 ROI。
+            let stale = view
+                .update(cx, |view, _| view.roi_gen != gen_id)
+                .unwrap_or(true);
+            if stale {
+                return;
+            }
             let result = cx
                 .background_executor()
                 .spawn(async move {
@@ -1981,13 +1996,8 @@ impl ImageViewer {
                 })
                 .await;
             view.update(cx, |view, cx| {
-                // 原生解码不可中断。无论结果是否过期，都先释放唯一 ROI
-                // worker；若期间视口已变化，则立即交接给最新的期望区域。
-                view.roi_worker_busy = false;
+                // 解码期间又来了新请求：丢弃旧结果。新请求自己会负责落地。
                 if view.roi_gen != gen_id {
-                    if view.roi_wanted.is_some() {
-                        view.roi_kick(cx);
-                    }
                     cx.notify();
                     return;
                 }
