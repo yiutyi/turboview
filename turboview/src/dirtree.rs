@@ -12,6 +12,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 struct DirNode {
+    /// Retained arena slot keeps outstanding async node IDs stable.
+    alive: bool,
     /// 显示名（最后一段路径；盘根为 "Z:\" 这类完整形式）
     name: Arc<str>,
     /// name 的小写缓存：children 插入排序时避免每次比较都分配新 String
@@ -92,6 +94,7 @@ impl DirTree {
         let depth = parent_id.map_or(0, |p| self.nodes[p].depth + 1);
         let id = self.nodes.len();
         self.nodes.push(DirNode {
+            alive: true,
             name,
             name_lower,
             path: Arc::from(path.to_path_buf()),
@@ -230,7 +233,7 @@ impl DirTree {
     pub fn root_path(&self) -> Option<PathBuf> {
         self.nodes
             .iter()
-            .find(|n| n.parent.is_none())
+            .find(|n| n.alive && n.parent.is_none())
             .map(|n| n.path.to_path_buf())
     }
 
@@ -277,10 +280,73 @@ impl DirTree {
 
     /// 标记本层正在后台扫描（结果落地后置回 false）
     pub fn set_loading(&mut self, id: usize, v: bool) {
+        if !self.nodes.get(id).is_some_and(|n| n.alive) {
+            return;
+        }
         if self.nodes[id].loading != v {
             self.nodes[id].loading = v;
             self.dirty = true;
         }
+    }
+
+    /// Reconcile a scanned directory's immediate children.
+    /// Removed subtrees release path/name/child allocations while arena IDs
+    /// remain stable for asynchronous callbacks that may still hold them.
+    pub fn reconcile_subdirs(&mut self, parent_path: &Path, subdirs: &[PathBuf]) -> Vec<PathBuf> {
+        let Some(&parent_id) = self.by_path.get(parent_path) else {
+            return Vec::new();
+        };
+        let desired: std::collections::HashSet<&Path> =
+            subdirs.iter().map(PathBuf::as_path).collect();
+        let stale: Vec<usize> = self.nodes[parent_id]
+            .children
+            .iter()
+            .copied()
+            .filter(|&id| self.nodes[id].alive && !desired.contains(self.nodes[id].path.as_ref()))
+            .collect();
+        let mut removed_roots = Vec::with_capacity(stale.len());
+        for root in stale {
+            removed_roots.push(self.nodes[root].path.to_path_buf());
+            let mut stack = vec![root];
+            while let Some(id) = stack.pop() {
+                if !self.nodes[id].alive {
+                    continue;
+                }
+                stack.extend(self.nodes[id].children.iter().copied());
+                let path = self.nodes[id].path.clone();
+                self.by_path.remove(path.as_ref());
+                let node = &mut self.nodes[id];
+                node.alive = false;
+                node.name = Arc::from("");
+                node.name_lower = Arc::from("");
+                node.path = Arc::from(PathBuf::new());
+                node.parent = None;
+                node.children = Vec::new();
+                node.scanned = false;
+                node.loading = false;
+                node.image_count = 0;
+                node.archive_count = 0;
+                node.first_image = None;
+                node.expanded = false;
+            }
+        }
+        if self.by_path.len().saturating_mul(2) < self.by_path.capacity() {
+            self.by_path.shrink_to_fit();
+        }
+        let alive: Vec<bool> = self.nodes.iter().map(|node| node.alive).collect();
+        self.nodes[parent_id].children.retain(|&id| alive[id]);
+        let node_count_before_add = self.nodes.len();
+        for path in subdirs {
+            self.ensure_dir(path);
+        }
+        if !removed_roots.is_empty() || self.nodes.len() != node_count_before_add {
+            self.dirty = true;
+        }
+        removed_roots
+    }
+
+    pub fn is_alive(&self, id: usize) -> bool {
+        self.nodes.get(id).is_some_and(|node| node.alive)
     }
 
     /// 把一层扫描发现的子目录挂到 `parent` 下（ensure_dir 自动按名序插入）
@@ -301,7 +367,7 @@ impl DirTree {
             self.rows.clear();
             self.row_index_by_id.clear();
             let roots: Vec<usize> = (0..self.nodes.len())
-                .filter(|&i| self.nodes[i].parent.is_none())
+                .filter(|&i| self.nodes[i].alive && self.nodes[i].parent.is_none())
                 .collect();
             let root_count = roots.len();
             for (i, r) in roots.into_iter().enumerate() {
@@ -313,6 +379,9 @@ impl DirTree {
     }
 
     fn push_visible(&mut self, id: usize, last_flags: u64) {
+        if !self.nodes[id].alive {
+            return;
+        }
         let (name, depth, expanded, has_children, count, scanned, loading, archives) = {
             let n = &self.nodes[id];
             (
@@ -351,6 +420,9 @@ impl DirTree {
             // 用索引遍历，避免克隆整棵子树 children（大目录下每帧省一次分配）
             for i in 0..child_count {
                 let c = self.nodes[id].children[i];
+                if !self.nodes[c].alive {
+                    continue;
+                }
                 let flags = if i + 1 == child_count {
                     prefix | child_bit
                 } else {
@@ -492,6 +564,29 @@ mod tests {
         t.collapse_all();
         assert_eq!(t.rows().len(), 2);
         assert!(t.row_index(a).is_none());
+    }
+
+    #[test]
+    fn reconcile_subdirs_releases_removed_subtree_and_keeps_ids_safe() {
+        let mut t = DirTree::new();
+        let root_path = p(&["root"]);
+        let child_path = p(&["root", "gone"]);
+        let grandchild_path = p(&["root", "gone", "nested"]);
+        let root = t.ensure_dir(&root_path);
+        t.set_expanded(root, true);
+        let child = t.ensure_dir(&child_path);
+        let grandchild = t.ensure_dir(&grandchild_path);
+        t.add_images(&[p(&["root", "gone", "nested", "1.jpg"])]);
+        let removed = t.reconcile_subdirs(&root_path, &[]);
+        assert_eq!(removed, vec![child_path.clone()]);
+        assert!(t.lookup(&child_path).is_none());
+        assert!(t.lookup(&grandchild_path).is_none());
+        assert!(!t.is_alive(child));
+        assert!(!t.is_alive(grandchild));
+        assert!(t.nodes[child].children.is_empty());
+        assert!(t.nodes[child].path.as_os_str().is_empty());
+        assert_eq!(t.nodes[root].children.len(), 0);
+        assert_eq!(t.rows().len(), 1);
     }
 
     #[test]

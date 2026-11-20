@@ -61,8 +61,8 @@ struct ActiveTask {
 }
 
 /// Tracks one active execution per key. Replacing or cancelling a task signals
-/// its token; completion is identity-checked to avoid removing a newer task
-/// that reused the same key.
+/// its token but remains registered until completion; this keeps in-flight
+/// identity visible while native decoder calls finish cooperatively.
 pub struct TaskRegistry<K> {
     active: HashMap<K, ActiveTask>,
 }
@@ -101,7 +101,7 @@ impl<K: Clone + Eq + Hash> TaskRegistry<K> {
     }
 
     pub fn cancel(&mut self, key: &K) -> bool {
-        if let Some(task) = self.active.remove(key) {
+        if let Some(task) = self.active.get(key) {
             task.cancellation.cancel();
             true
         } else {
@@ -185,6 +185,8 @@ mod tests {
         assert_eq!(registry.cancel_where(|key| *key == "a.jpg"), 1);
         assert!(a.cancellation.is_cancelled());
         assert!(b.cancellation.is_active());
+        assert_eq!(registry.len(), 2);
+        assert!(registry.finish(&"a.jpg", a.id));
         assert_eq!(registry.len(), 1);
     }
 }

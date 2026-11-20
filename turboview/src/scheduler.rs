@@ -109,16 +109,21 @@ impl<K: Clone + Eq + Hash> TaskScheduler<K> {
         Some(item.key)
     }
 
-    /// Remove and return the next pending key without marking it as running.
+    /// Remove the next pending task and its priority without marking it as running.
     /// This is useful when an external executor owns task lifecycle tracking.
-    pub fn pop_pending(&mut self) -> Option<K> {
+    pub fn pop_pending_with_priority(&mut self) -> Option<(K, TaskPriority)> {
         let index = self
             .pending
             .iter()
             .enumerate()
             .max_by_key(|(_, item)| (item.priority, std::cmp::Reverse(item.sequence)))
             .map(|(index, _)| index)?;
-        Some(self.pending.swap_remove(index).key)
+        let item = self.pending.swap_remove(index);
+        Some((item.key, item.priority))
+    }
+
+    pub fn pop_pending(&mut self) -> Option<K> {
+        self.pop_pending_with_priority().map(|(key, _)| key)
     }
 
     /// Retain queued keys accepted by the predicate.
@@ -214,7 +219,10 @@ mod tests {
         scheduler.schedule(1, TaskPriority::Prefetch);
         scheduler.schedule(2, TaskPriority::Current);
         scheduler.retain_pending(|key| *key != 1);
-        assert_eq!(scheduler.pop_pending(), Some(2));
+        assert_eq!(
+            scheduler.pop_pending_with_priority(),
+            Some((2, TaskPriority::Current))
+        );
         assert_eq!(scheduler.pop_pending(), None);
     }
 
