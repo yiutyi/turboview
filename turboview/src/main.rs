@@ -590,8 +590,8 @@ impl ImageViewer {
 
         // Navigation is a priority boundary: keep work for the newly selected
         // image, cancel obsolete decodes, and discard stale queued prefetches.
-        // The decoder itself may finish its current native call, but its token
-        // prevents retries/result publication and frees the logical slot now.
+        // The decoder itself may finish its current native call; its token
+        // prevents retries/result publication and the slot stays occupied until return.
         self.active_tasks.cancel_where(|active| active != &path);
         self.prefetch_queue.clear_pending();
 
