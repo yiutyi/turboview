@@ -765,13 +765,23 @@ impl ImageViewer {
             archives,
         } = level;
         // 新建的子目录先挂进树（收起状态，用户点开才扫）
-        self.tree.add_subdirs(id, &subdirs);
+        let removed_dirs = self.tree.reconcile_subdirs(dir, &subdirs);
+        let Some(id) = self.tree.lookup(dir) else {
+            return;
+        };
 
         let new: HashSet<PathBuf> = images.iter().cloned().chain(archives.iter().cloned()).collect();
+        let under_removed_dir = |p: &Path| match split_virtual(p) {
+            Some((archive, _)) => removed_dirs.iter().any(|root| archive.starts_with(root)),
+            None => removed_dirs.iter().any(|root| p.starts_with(root)),
+        };
         let old: HashSet<PathBuf> = self
             .images
             .iter()
-            .filter(|p| p.parent() == Some(dir) && split_virtual(p).is_none())
+            .filter(|p| {
+                (p.parent() == Some(dir) && split_virtual(p).is_none())
+                    || under_removed_dir(p)
+            })
             .map(|p| p.to_path_buf())
             .collect();
         let removed: Vec<PathBuf> = old.iter().filter(|p| !new.contains(*p)).cloned().collect();
@@ -807,8 +817,13 @@ impl ImageViewer {
             }
         }
 
-        let rm_img = removed.iter().filter(|p| !archive::is_archive(p)).count();
-        let rm_arc = removed.len() - rm_img;
+        // Virtual archive entries are navigation items, not directory-tree files.
+        let removed_disk: Vec<&PathBuf> = removed
+            .iter()
+            .filter(|p| split_virtual(p).is_none())
+            .collect();
+        let rm_img = removed_disk.iter().filter(|p| !archive::is_archive(p)).count();
+        let rm_arc = removed_disk.len() - rm_img;
         let add_img = added.iter().filter(|p| !archive::is_archive(p)).count();
         let add_arc = added.len() - add_img;
         let add_total = added.len();
@@ -1409,6 +1424,9 @@ impl ImageViewer {
         level: turboview::scanner::DirLevel,
         cx: &mut Context<Self>,
     ) {
+        if !self.tree.is_alive(id) {
+            return;
+        }
         let turboview::scanner::DirLevel {
             subdirs,
             images,
