@@ -3779,6 +3779,7 @@ fn main() {
         cx.activate(true);
         trace("window activated");
     });
+    trace("event loop exit");
 }
 
 // ---------------------------------------------------------------------------
