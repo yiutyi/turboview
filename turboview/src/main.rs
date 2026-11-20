@@ -283,8 +283,10 @@ struct ImageViewer {
     cache_budget: usize,
     /// 缓存条目上限（按预算推导）
     cache_max_entries: usize,
-    /// 同时在跑的预取解码数上限（按 CPU 核数；2 核机器上不再 4 张齐发）
+    /// 预取并发上限；始终为当前图保留一个额外解码槽。
     max_prefetch_tasks: usize,
+    /// 包含当前图在内的总解码并发硬上限。
+    max_decode_tasks: usize,
     /// 有界优先级预取队列；执行中的任务仍由 in_flight 跟踪
     prefetch_queue: TaskScheduler<PathBuf>,
     /// 最近一次渲染的视口物理尺寸 (w, h)：解码尺寸按它自适应
@@ -438,6 +440,7 @@ impl ImageViewer {
             cache_budget,
             cache_max_entries,
             max_prefetch_tasks,
+            max_decode_tasks: max_prefetch_tasks + 1,
             prefetch_queue: TaskScheduler::new(16, 1),
             viewport_px,
             thumb_gen: 0,
@@ -1003,9 +1006,13 @@ impl ImageViewer {
     /// 预取受并发上限约束：满了排队，解码完成回调里再补位。
     fn spawn_load(&mut self, path: PathBuf, set_current: bool, cx: &mut Context<Self>) {
         if set_current {
-            // 用户已经选中排队中的预取项：移出队列，立即走当前图路径。
-            self.prefetch_queue.cancel_pending(|queued| queued == &path);
-            self.spawn_load_now(path, true, cx);
+            if self.in_flight.len() >= self.max_decode_tasks {
+                // 原生解码不可抢占：当前图进入最高优先级队列，等待一个真实 worker 槽释放。
+                self.prefetch_queue.schedule(path, TaskPriority::Current);
+            } else {
+                self.prefetch_queue.cancel_pending(|queued| queued == &path);
+                self.spawn_load_now(path, true, cx);
+            }
             return;
         }
         if self.in_flight.contains(&path) {
@@ -1020,7 +1027,7 @@ impl ImageViewer {
 
     /// 并发有空位时补发排队中的预取任务
     fn pump_prefetch_queue(&mut self, cx: &mut Context<Self>) {
-        while self.in_flight.len() < self.max_prefetch_tasks {
+        while self.in_flight.len() < self.max_decode_tasks {
             let Some(next) = self.prefetch_queue.pop_pending() else {
                 break;
             };
@@ -1297,8 +1304,10 @@ impl ImageViewer {
         // 的流，用户一按"下一张"就得排在它们后面等好几秒。
         // 收紧成"单线程 + 只取下一张"，把带宽留给用户真正要看的那张。
         let slow_source = self.on_remote() || self.rotational;
+        self.max_decode_tasks = self.max_prefetch_tasks + 1;
         if slow_source {
             self.max_prefetch_tasks = 1;
+            self.max_decode_tasks = self.max_prefetch_tasks + 1;
             self.prefetch_queue.clear_pending();
         }
         // 快速连翻时队列会积压，丢掉离当前位置超过 3 张的过期项
