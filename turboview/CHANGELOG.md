@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.2
+
+- True fullscreen via GPUI (title bar hidden, fills the physical display); ESC / F / top-right X all exit and restore the sidebar.
+- Center the image on viewport resize.
+- Status-bar toggles (shuffle, slideshow, original, fullscreen) show an active background state.
+- Click the status-bar logo to open an About overlay; dismiss with the backdrop or ESC.
+
 ## 0.2.1
 
 - Restore immediate decoding for the current image instead of queuing it behind a global decode cap; page turns respond without waiting for a prefetch worker.

@@ -57,6 +57,7 @@ actions!(
         RandomImage,
         ToggleSlideshow,
         ToggleFullscreen,
+        ExitFullscreen,
         DeleteImage,
         CopyImage,
         CopyPath,
@@ -133,6 +134,8 @@ const ICON_ARCHIVE: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width="
 const ICON_ORIGINAL: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="1.5"/><path d="M9 3v18M15 3v18M3 9h18M3 15h18"/></svg>"##;
 /// 全屏（四角向外展开）
 const ICON_FULLSCREEN: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M3 16v3a2 2 0 0 0 2 2h3M21 16v3a2 2 0 0 1-2 2h-3"/></svg>"##;
+/// 关闭（X）：全屏时右上角退出按钮
+const ICON_CLOSE: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 6l12 12M18 6L6 18"/></svg>"##;
 /// 文件夹（闭合）：单色矢量轮廓，启动时按主题栅格化
 const ICON_FOLDER: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="1.9" stroke-linejoin="round"><path d="M3 6.5h6l2 2.5h10v10.5H3z"/></svg>"##;
 /// 文件夹（展开）
@@ -336,11 +339,9 @@ struct ImageViewer {
     random_mode: bool,
     /// 随机跳转历史（右键退回用）
     history: Vec<usize>,
-    /// 伪全屏状态及进入前的侧边栏可见性（退出恢复）
+    /// 真全屏状态及进入前的侧边栏可见性（退出恢复）
     fullscreen: bool,
     sidebar_before_fullscreen: bool,
-    /// 窗口标题（伪全屏 FindWindowW 用）
-    window_title: String,
     /// ROI 渐进重解码覆盖层（当前图 1/1 原始分辨率区域）
     roi_overlay: Option<RoiOverlay>,
     /// ROI 最新期望区域（渲染时更新；加载完成后按需重新调度）
@@ -377,6 +378,10 @@ struct ImageViewer {
     theme_icons: [Arc<RenderImage>; 2],
     /// 状态栏图标：[明暗][压缩包、随机、幻灯片、原图、全屏]，启动时栅格化
     status_icons: [[Arc<RenderImage>; 5]; 2],
+    /// About 浮层是否显示（点击状态栏 P logo 切换）
+    about_visible: bool,
+    /// 全屏时右上角关闭按钮的 X 图标：[明暗]
+    close_icons: [Arc<RenderImage>; 2],
 }
 
 impl ImageViewer {
@@ -384,7 +389,6 @@ impl ImageViewer {
         images: Vec<PathBuf>,
         index: usize,
         fast_mode: bool,
-        window_title: String,
         // 启动时是否显示目录树（作为默认看图器打开单张图片时隐藏）
         sidebar_visible: bool,
         cx: &mut Context<Self>,
@@ -462,7 +466,6 @@ impl ImageViewer {
             history: Vec::new(),
             fullscreen: false,
             sidebar_before_fullscreen: true,
-            window_title,
             roi_overlay: None,
             roi_wanted: None,
             roi_gen: 0,
@@ -508,6 +511,11 @@ impl ImageViewer {
                     make_mono_icon(ICON_ORIGINAL, 20, 0xAAB4C3),
                     make_mono_icon(ICON_FULLSCREEN, 20, 0xAAB4C3),
                 ],
+            ],
+            about_visible: false,
+            close_icons: [
+                make_mono_icon(ICON_CLOSE, 20, 0x5A5A5A),
+                make_mono_icon(ICON_CLOSE, 20, 0xC8C8C8),
             ],
         };
         viewer.spawn_watch_pump(cx);
@@ -1663,8 +1671,9 @@ impl ImageViewer {
         self.goto(idx, cx);
     }
 
-    /// 伪全屏切换：全屏时隐藏目录树（图片自动占满居中），退出时恢复
-    fn toggle_fullscreen(&mut self, cx: &mut Context<Self>) {
+    /// 真全屏切换：gpui 移除标题栏并占满当前显示器，同时隐藏目录树；退出时恢复。
+    /// ESC / F / 右上角 X 均走这里，保证平台窗口与 UI 状态同步翻转。
+    fn toggle_fullscreen(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.fullscreen = !self.fullscreen;
         if self.fullscreen {
             self.sidebar_before_fullscreen = self.sidebar_visible;
@@ -1672,7 +1681,7 @@ impl ImageViewer {
         } else {
             self.sidebar_visible = self.sidebar_before_fullscreen;
         }
-        win32::toggle_maximize(&self.window_title);
+        window.toggle_fullscreen();
         cx.notify();
     }
 
@@ -1849,8 +1858,18 @@ impl ImageViewer {
         cx.notify();
     }
 
-    fn on_toggle_fullscreen(&mut self, _: &ToggleFullscreen, _: &mut Window, cx: &mut Context<Self>) {
-        self.toggle_fullscreen(cx);
+    fn on_toggle_fullscreen(&mut self, _: &ToggleFullscreen, window: &mut Window, cx: &mut Context<Self>) {
+        self.toggle_fullscreen(window, cx);
+    }
+
+    /// ESC：优先关 About；否则仅在全屏时退出（非全屏按 ESC 不进入全屏）
+    fn on_exit_fullscreen(&mut self, _: &ExitFullscreen, window: &mut Window, cx: &mut Context<Self>) {
+        if self.about_visible {
+            self.about_visible = false;
+            cx.notify();
+        } else if self.fullscreen {
+            self.toggle_fullscreen(window, cx);
+        }
     }
 
     // ---------- ROI 渐进重解码 ----------
@@ -2988,13 +3007,14 @@ impl Render for ImageViewer {
                 .gap(px(4.0))
                 .px_1()
                 .text_xs()
-                .text_color(if self.random_mode {
-                    colors.text
+                .rounded_sm()
+                .bg(if self.random_mode {
+                    colors.selected
                 } else {
-                    colors.disabled
+                    colors.container
                 })
                 .cursor_pointer()
-                .hover(|s| s.opacity(0.6))
+                .hover(|s| s.opacity(0.85))
                 .child(
                     img(ImageSource::Render(self.status_icons[(self.dark_mode as usize)][1].clone()))
                         .w(px(15.0))
@@ -3021,13 +3041,14 @@ impl Render for ImageViewer {
                 .gap(px(4.0))
                 .px_1()
                 .text_xs()
-                .text_color(if self.slideshow {
-                    colors.text
+                .rounded_sm()
+                .bg(if self.slideshow {
+                    colors.selected
                 } else {
-                    colors.disabled
+                    colors.container
                 })
                 .cursor_pointer()
-                .hover(|s| s.opacity(0.6))
+                .hover(|s| s.opacity(0.85))
                 .child(
                     img(ImageSource::Render(self.status_icons[(self.dark_mode as usize)][2].clone()))
                         .w(px(15.0))
@@ -3055,13 +3076,14 @@ impl Render for ImageViewer {
                 .gap(px(4.0))
                 .px_1()
                 .text_xs()
-                .text_color(if self.original_view {
-                    colors.text
+                .rounded_sm()
+                .bg(if self.original_view {
+                    colors.selected
                 } else {
-                    colors.disabled
+                    colors.container
                 })
                 .cursor_pointer()
-                .hover(|s| s.opacity(0.6))
+                .hover(|s| s.opacity(0.85))
                 .child(
                     img(ImageSource::Render(self.status_icons[(self.dark_mode as usize)][3].clone()))
                         .w(px(15.0))
@@ -3119,9 +3141,14 @@ impl Render for ImageViewer {
                 .gap(px(4.0))
                 .px_1()
                 .text_xs()
-                .text_color(if self.fullscreen { gpui::rgb(0x3B82F6) } else { colors.disabled })
+                .rounded_sm()
+                .bg(if self.fullscreen {
+                    colors.selected
+                } else {
+                    colors.container
+                })
                 .cursor_pointer()
-                .hover(|s| s.opacity(0.72))
+                .hover(|s| s.opacity(0.85))
                 .child(
                     img(ImageSource::Render(
                         self.status_icons[(self.dark_mode as usize)][4].clone(),
@@ -3132,8 +3159,8 @@ impl Render for ImageViewer {
                 )
                 .on_mouse_down(
                     MouseButton::Left,
-                    cx.listener(|this, _: &MouseDownEvent, _w, cx| {
-                        this.toggle_fullscreen(cx);
+                    cx.listener(|this, _: &MouseDownEvent, w, cx| {
+                        this.toggle_fullscreen(w, cx);
                     }),
                 )
                 .into_any_element(),
@@ -3182,12 +3209,26 @@ impl Render for ImageViewer {
             .text_xs()
             .text_color(colors.text)
             .children(status_leading.into_iter())
-            // 左侧：P 字 logo（品牌位图，彩色）
+            // 左侧：P 字 logo（品牌位图，彩色）；点击弹出 About
             .child(
-                img(ImageSource::Render(self.logo.clone()))
-                    .w(px(17.0))
-                    .h(px(17.0))
-                    .flex_shrink_0(),
+                div()
+                    .id("about-toggle")
+                    .cursor_pointer()
+                    .rounded_sm()
+                    .hover(|s| s.opacity(0.75))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _: &MouseDownEvent, _w, cx| {
+                            this.about_visible = !this.about_visible;
+                            cx.notify();
+                        }),
+                    )
+                    .child(
+                        img(ImageSource::Render(self.logo.clone()))
+                            .w(px(17.0))
+                            .h(px(17.0))
+                            .flex_shrink_0(),
+                    ),
             )
             .child(
                 div()
@@ -3204,6 +3245,112 @@ impl Render for ImageViewer {
         // ---------- 侧边栏 ----------
         let sidebar = if self.sidebar_visible {
             Some(self.render_sidebar(&colors, cx))
+        } else {
+            None
+        };
+
+        // ---------- 全屏右上角 X 关闭按钮 ----------
+        // 真全屏后无标题栏，需要一个可点击的退出入口；ESC/F 仍可用。
+        let close_btn = if self.fullscreen {
+            Some(
+                div()
+                    .id("fullscreen-close")
+                    .absolute()
+                    .top(px(12.0))
+                    .right(px(16.0))
+                    .w(px(34.0))
+                    .h(px(34.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded_md()
+                    .bg(colors.container)
+                    .cursor_pointer()
+                    .hover(|s| s.bg(colors.selected))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _: &MouseDownEvent, w, cx| {
+                            this.toggle_fullscreen(w, cx);
+                        }),
+                    )
+                    .child(
+                        img(ImageSource::Render(
+                            self.close_icons[self.dark_mode as usize].clone(),
+                        ))
+                        .w(px(18.0))
+                        .h(px(18.0)),
+                    ),
+            )
+        } else {
+            None
+        };
+
+        // ---------- About 浮层 ----------
+        let about_layer = if self.about_visible {
+            Some(
+                div()
+                    .id("about-layer")
+                    .absolute()
+                    .left(px(0.0))
+                    .top(px(0.0))
+                    .w(viewport.width)
+                    .h(viewport.height)
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(gpui::rgba(0x00000066))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _: &MouseDownEvent, _w, cx| {
+                            this.about_visible = false;
+                            cx.notify();
+                        }),
+                    )
+                    .child(
+                        div()
+                            .id("about-card")
+                            .w(px(360.0))
+                            .flex()
+                            .flex_col()
+                            .gap(px(10.0))
+                            .px_4()
+                            .py_4()
+                            .rounded_md()
+                            .bg(colors.background)
+                            .border_1()
+                            .border_color(colors.border)
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|_, _: &MouseDownEvent, _w, _cx| {
+                                    // 点卡片本体不关闭（阻止冒泡到遮罩）
+                                }),
+                            )
+                            .child(
+                                div()
+                                    .text_lg()
+                                    .text_color(colors.text)
+                                    .child("TurboView"),
+                            )
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(colors.disabled)
+                                    .child(format!("版本 {}", env!("CARGO_PKG_VERSION"))),
+                            )
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(colors.disabled)
+                                    .child("史上最快图片浏览器 · Rust + GPUI + libjpeg-turbo SIMD"),
+                            )
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(colors.disabled)
+                                    .child("https://github.com/yiutyi/turboview"),
+                            ),
+                    ),
+            )
         } else {
             None
         };
@@ -3233,6 +3380,7 @@ impl Render for ImageViewer {
             .on_action(cx.listener(Self::on_toggle_theme))
             .on_action(cx.listener(Self::on_refresh_tree))
             .on_action(cx.listener(Self::on_toggle_fullscreen))
+            .on_action(cx.listener(Self::on_exit_fullscreen))
             .on_action(cx.listener(Self::on_random))
             .on_action(cx.listener(Self::on_toggle_slideshow))
             .on_action(cx.listener(Self::on_quit))
@@ -3254,6 +3402,8 @@ impl Render for ImageViewer {
                     .child(image_area),
             )
             .child(status_bar)
+            .children(close_btn)
+            .children(about_layer)
     }
 }
 
@@ -3710,7 +3860,7 @@ fn main() {
             KeyBinding::new("q", Quit, None),
             KeyBinding::new("ctrl-q", Quit, None),
             KeyBinding::new("cmd-q", Quit, None),
-            KeyBinding::new("escape", ToggleFullscreen, None),
+            KeyBinding::new("escape", ExitFullscreen, None),
             KeyBinding::new("delete", DeleteImage, None),
             KeyBinding::new("ctrl-c", CopyImage, None),
             KeyBinding::new("ctrl-shift-c", CopyPath, None),
@@ -3749,7 +3899,6 @@ fn main() {
                         Vec::new(),
                         0,
                         true,
-                        window_title.clone(),
                         !open_single_image,
                         cx,
                     );
